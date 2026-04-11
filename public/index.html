@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SesApp</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<!-- ═══════════════ GİRİŞ EKRANI ═══════════════ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="52" height="52" viewBox="0 0 52 52">
+        <circle cx="26" cy="26" r="26" fill="#5865f2"/>
+        <path d="M14 19s4-1 12-1 12 1 12 1 3 4 3 9-3 8-3 8l-5 2-6 1-6-1-5-2s-3-3-3-8 3-9 3-9z" fill="white"/>
+        <circle cx="20.5" cy="26" r="2" fill="#5865f2"/>
+        <circle cx="31.5" cy="26" r="2" fill="#5865f2"/>
+      </svg>
+    </div>
+    <h1>SesApp'a Hoş Geldin</h1>
+    <p class="login-sub">Arkadaşlarınla mesajlaş ve sesli sohbet et</p>
+    <div id="login-error"></div>
+    <form id="login-form">
+      <label for="username-input">Kullanıcı Adı</label>
+      <input type="text" id="username-input" placeholder="adınızı girin..." maxlength="20" autocomplete="off" autofocus />
+      <label for="password-input">Oda Şifresi</label>
+      <input type="password" id="password-input" placeholder="şifreyi girin..." autocomplete="off" />
+      <button type="submit" id="join-btn">Sohbete Katıl</button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════ ANA UYGULAMA ═══════════════ -->
+<div id="app" class="hidden">
+
+  <!-- ── Sol kenar çubuğu ── -->
+  <div id="sidebar">
+    <div class="server-name">
+      <svg width="18" height="18" viewBox="0 0 52 52">
+        <circle cx="26" cy="26" r="26" fill="#5865f2"/>
+        <path d="M14 19s4-1 12-1 12 1 12 1 3 4 3 9-3 8-3 8l-5 2-6 1-6-1-5-2s-3-3-3-8 3-9 3-9z" fill="white"/>
+        <circle cx="20.5" cy="26" r="2" fill="#5865f2"/>
+        <circle cx="31.5" cy="26" r="2" fill="#5865f2"/>
+      </svg>
+      SesApp
+    </div>
+
+    <div class="sidebar-scroll">
+
+      <!-- Metin kanalları -->
+      <div class="channel-group">
+        <div class="channel-group-header">METİN KANALLARI</div>
+        <ul id="channel-list"></ul>
+      </div>
+
+      <!-- Sesli kanallar -->
+      <div class="channel-group">
+        <div class="channel-group-header">SESLİ KANALLAR</div>
+        <ul id="voice-channel-list">
+          <li class="voice-channel-item" data-room="sesli-genel">
+            <div class="vc-row">
+              <svg class="vc-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+              </svg>
+              <span>sesli-genel</span>
+              <button class="vc-leave-btn" title="Kanaldan Ayrıl">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                  <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24c1.12.37 2.33.57 3.58.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.58a1 1 0 0 1-.25 1.01l-2.2 2.2z"/>
+                </svg>
+              </button>
+            </div>
+            <ul class="vc-members" id="vm-sesli-genel"></ul>
+          </li>
+          <li class="voice-channel-item" data-room="sesli-oyun">
+            <div class="vc-row">
+              <svg class="vc-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+              </svg>
+              <span>sesli-oyun</span>
+              <button class="vc-leave-btn" title="Kanaldan Ayrıl">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                  <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24c1.12.37 2.33.57 3.58.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.58a1 1 0 0 1-.25 1.01l-2.2 2.2z"/>
+                </svg>
+              </button>
+            </div>
+            <ul class="vc-members" id="vm-sesli-oyun"></ul>
+          </li>
+        </ul>
+      </div>
+
+      <!-- DM — Çevrimiçi Kullanıcılar -->
+      <div class="channel-group">
+        <div class="channel-group-header">DİREKT MESAJLAR</div>
+        <ul id="dm-user-list"></ul>
+      </div>
+
+    </div>
+
+    <!-- Kendi kullanıcı paneli -->
+    <div class="user-panel">
+      <div class="up-avatar" id="self-avatar"></div>
+      <div class="up-info">
+        <div class="up-name" id="self-username"></div>
+        <div class="up-status">Çevrimiçi</div>
+      </div>
+      <div class="up-actions">
+        <!-- Mikrofon toggle -->
+        <button class="up-btn" id="mic-btn" title="Mikrofon" style="display:none">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.42 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.3 6-6.72h-1.7z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Ana içerik ── -->
+  <div id="main">
+
+    <!-- Başlık -->
+    <div id="channel-header">
+      <span id="ch-icon" class="ch-icon">#</span>
+      <span id="channel-name-display">kanal</span>
+      <span id="channel-desc-display" class="channel-desc"></span>
+      <div id="header-actions">
+        <!-- Ekran paylaşımı -->
+        <button class="hdr-btn" id="screen-share-btn" title="Ekranı Paylaş">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/>
+          </svg>
+          <span id="screen-share-label">Ekranı Paylaş</span>
+        </button>
+        <!-- Sessiz/Aç butonu (sadece sesli kanaldayken) -->
+        <div id="voice-controls" class="hidden">
+          <button class="vc-btn" id="vc-mute-btn" title="Sessiz/Aç">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.42 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.3 6-6.72h-1.7z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ekran paylaşımı görüntüleme paneli -->
+    <div id="screen-panel" class="hidden">
+      <div id="screen-panel-header">
+        <span id="screen-panel-title">📺 Ekran Paylaşımı</span>
+        <button id="screen-panel-close" title="Kapat">✕</button>
+      </div>
+      <video id="screen-video" autoplay playsinline></video>
+    </div>
+
+    <!-- Ses kilit açma banneri -->
+    <div id="audio-unlock-banner" class="hidden">
+      🎵 Müzik başladı &nbsp;
+      <button id="audio-unlock-btn">Sesi Aç →</button>
+    </div>
+
+    <!-- Müzik paneli -->
+    <div id="music-panel" class="hidden">
+      <div id="music-now-playing">
+        <img id="music-thumb" src="" alt="" />
+        <div id="music-info">
+          <div id="music-title">—</div>
+          <div id="music-added-by"></div>
+        </div>
+        <div id="music-controls">
+          <button id="music-play-btn" title="Oynat/Duraklat">
+            <svg id="music-play-icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+          </button>
+          <button id="music-skip-btn" title="Geç">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div id="music-progress-wrap">
+        <div id="music-progress-bar"><div id="music-progress-fill"></div></div>
+        <div id="music-times"><span id="music-elapsed">0:00</span><span id="music-duration">0:00</span></div>
+      </div>
+      <div id="music-queue-wrap" class="hidden">
+        <div id="music-queue-header">Sıradakiler</div>
+        <ul id="music-queue-list"></ul>
+      </div>
+      <!-- SoundCloud player -->
+      <div id="sc-player-wrap">
+        <iframe id="sc-player" allow="autoplay" scrolling="no" frameborder="0"></iframe>
+      </div>
+    </div>
+
+    <!-- Mesajlar -->
+    <div id="messages-container"></div>
+
+    <!-- Yazıyor göstergesi -->
+    <div id="typing-indicator"></div>
+
+    <!-- Mesaj formu -->
+    <div id="message-form-wrap">
+      <form id="message-form">
+        <div class="input-wrap">
+          <input type="text" id="message-input" placeholder="Mesaj gönder... (müzik için: /play şarkı adı)" maxlength="2000" autocomplete="off" />
+          <button type="submit" id="send-btn" title="Gönder">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+              <path d="M2 21l21-9L2 3v7l15 2-15 2z"/>
+            </svg>
+          </button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+</div>
+
+<!-- Emoji tepki seçici -->
+<div id="emoji-picker" class="hidden">
+  <span data-emoji="👍">👍</span>
+  <span data-emoji="❤️">❤️</span>
+  <span data-emoji="😂">😂</span>
+  <span data-emoji="😮">😮</span>
+  <span data-emoji="😢">😢</span>
+  <span data-emoji="🔥">🔥</span>
+  <span data-emoji="🎉">🎉</span>
+  <span data-emoji="👎">👎</span>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/sounds.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
