@@ -858,3 +858,65 @@ li.active .ch-hash { color: var(--text-2); }
   color: #fff;
   box-shadow: 0 0 12px rgba(35,165,90,.5);
 }
+
+/* ═══════════════ AYARLAR MODALI ═══════════════ */
+#settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+#settings-modal {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  width: min(420px, 92vw);
+  box-shadow: 0 16px 48px rgba(0,0,0,.6);
+  overflow: hidden;
+}
+#settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: var(--bg-tertiary);
+  font-weight: 700;
+  color: var(--text-1);
+  font-size: .95rem;
+}
+#settings-close {
+  color: var(--text-m);
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: background .1s, color .1s;
+}
+#settings-close:hover { background: var(--red); color: #fff; }
+
+.settings-section { padding: 16px 20px 20px; }
+.settings-section-title {
+  color: var(--text-m);
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.settings-options { display: flex; flex-direction: column; gap: 8px; }
+.settings-opt {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: border-color .15s, background .1s;
+}
+.settings-opt:hover { background: var(--bg-hover); }
+.settings-opt.selected { border-color: var(--accent); }
+.settings-opt-icon { font-size: 1.4rem; }
+.settings-opt-label { color: var(--text-1); font-weight: 600; font-size: .9rem; }
+.settings-opt-desc  { color: var(--text-m); font-size: .78rem; margin-top: 2px; }

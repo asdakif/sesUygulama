@@ -750,15 +750,12 @@ async function joinVoiceChannel(room) {
   }
 
   currentVoiceRoom = room;
-  isMuted = true; // PTT: varsayılan kapalı
-  if (localStream) localStream.getAudioTracks().forEach(t => { t.enabled = false; });
   audioUnlocked = true;
   socket.emit('voice_join', { room });
-  socket.emit('voice_mute_state', { muted: true });
   socket.emit('music_sync_request', { voiceRoom: room });
   sounds.voiceJoin();
   updateVoiceUI();
-  showPttIndicator(false);
+  applyVoiceMode();
 }
 
 async function leaveVoiceChannel() {
@@ -857,11 +854,31 @@ function toggleMute() {
   updateMuteBtn();
 }
 
-// ── Push-to-Talk (Space) ──────────────────────────────────────────────────────
-let pttActive = false;
+// ── Ses modu (PTT / VAD) ──────────────────────────────────────────────────────
+let pttActive  = false;
+let voiceMode  = localStorage.getItem('voiceMode') || 'ptt'; // 'ptt' | 'vad'
 
+function applyVoiceMode() {
+  if (!currentVoiceRoom || !localStream) return;
+  if (voiceMode === 'vad') {
+    // Ses etkinliği: mikrofon her zaman açık
+    isMuted = false;
+    localStream.getAudioTracks().forEach(t => { t.enabled = true; });
+    socket.emit('voice_mute_state', { muted: false });
+    hidePttIndicator();
+  } else {
+    // PTT: başlangıçta kapalı
+    isMuted = true;
+    localStream.getAudioTracks().forEach(t => { t.enabled = false; });
+    socket.emit('voice_mute_state', { muted: true });
+    showPttIndicator(false);
+  }
+  updateMuteBtn();
+}
+
+// PTT — Space
 document.addEventListener('keydown', (e) => {
-  if (!currentVoiceRoom) return;
+  if (!currentVoiceRoom || voiceMode !== 'ptt') return;
   if (e.code !== 'Space') return;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (pttActive) return;
@@ -872,13 +889,37 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('keyup', (e) => {
-  if (!currentVoiceRoom) return;
+  if (!currentVoiceRoom || voiceMode !== 'ptt') return;
   if (e.code !== 'Space') return;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   pttActive = false;
   if (localStream) localStream.getAudioTracks().forEach(t => { t.enabled = false; });
   socket.emit('voice_mute_state', { muted: true });
   showPttIndicator(false);
+});
+
+// ── Ayarlar modalı ───────────────────────────────────────────────────────────
+const settingsOverlay = $('settings-overlay');
+
+$('settings-btn').addEventListener('click', () => {
+  // Mevcut seçimi göster
+  document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(o => {
+    o.classList.toggle('selected', o.dataset.voiceMode === voiceMode);
+  });
+  settingsOverlay.classList.remove('hidden');
+});
+
+$('settings-close').addEventListener('click', () => settingsOverlay.classList.add('hidden'));
+settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden'); });
+
+document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(opt => {
+  opt.addEventListener('click', () => {
+    document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(o => o.classList.remove('selected'));
+    opt.classList.add('selected');
+    voiceMode = opt.dataset.voiceMode;
+    localStorage.setItem('voiceMode', voiceMode);
+    applyVoiceMode();
+  });
 });
 
 function showPttIndicator(active) {
