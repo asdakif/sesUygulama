@@ -15,7 +15,7 @@ const PORT   = process.env.PORT || 3000;
 function randomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
-const ROOM_PASSWORD = process.env.PASSWORD || randomCode();
+const ROOM_PASSWORD = process.env.PASSWORD || 'akif31';
 
 // ─── Güvenlik başlıkları ──────────────────────────────────────────────────────
 app.use(helmet({
