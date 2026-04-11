@@ -920,3 +920,36 @@ li.active .ch-hash { color: var(--text-2); }
 .settings-opt-icon { font-size: 1.4rem; }
 .settings-opt-label { color: var(--text-1); font-weight: 600; font-size: .9rem; }
 .settings-opt-desc  { color: var(--text-m); font-size: .78rem; margin-top: 2px; }
+
+/* ═══════════════ MÜZİK SES AYARI ═══════════════ */
+#music-volume-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--text-m);
+}
+#music-volume {
+  -webkit-appearance: none;
+  width: 80px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+  cursor: pointer;
+}
+#music-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform .1s;
+}
+#music-volume::-webkit-slider-thumb:hover { transform: scale(1.2); }
+#music-volume-label {
+  font-size: .75rem;
+  color: var(--text-m);
+  width: 32px;
+}

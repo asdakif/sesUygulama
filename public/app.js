@@ -67,6 +67,8 @@ const musicThumb      = $('music-thumb');
 const musicPlayBtn    = $('music-play-btn');
 const musicPlayIcon   = $('music-play-icon');
 const musicSkipBtn    = $('music-skip-btn');
+const musicVolume     = $('music-volume');
+const musicVolumeLabel= $('music-volume-label');
 const musicProgressFill = $('music-progress-fill');
 const musicElapsed    = $('music-elapsed');
 const musicDurationEl = $('music-duration');
@@ -386,6 +388,7 @@ function initScWidget(trackUrl, seekMs, autoplay) {
 
   scWidget.bind(SC.Widget.Events.READY, () => {
     scReady = true;
+    scWidget.setVolume(parseInt(localStorage.getItem('musicVolume') ?? '80'));
     if (seekMs > 0) scWidget.seekTo(seekMs);
     if (autoplay) {
       scWidget.play();
@@ -566,6 +569,18 @@ musicPlayBtn.addEventListener('click', () => {
 musicSkipBtn.addEventListener('click', () => {
   if (!currentVoiceRoom) return;
   socket.emit('music_skip', { voiceRoom: currentVoiceRoom });
+});
+
+// Ses ayarı — localStorage'dan yükle
+const savedVol = parseInt(localStorage.getItem('musicVolume') ?? '80');
+musicVolume.value = savedVol;
+musicVolumeLabel.textContent = savedVol + '%';
+
+musicVolume.addEventListener('input', () => {
+  const vol = parseInt(musicVolume.value);
+  musicVolumeLabel.textContent = vol + '%';
+  localStorage.setItem('musicVolume', vol);
+  if (scWidget && scReady) scWidget.setVolume(vol);
 });
 
 // ═══════════════ EKRAN PAYLAŞIMI ═══════════════
