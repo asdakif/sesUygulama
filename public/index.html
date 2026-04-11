@@ -147,9 +147,41 @@
     <div id="screen-panel" class="hidden">
       <div id="screen-panel-header">
         <span id="screen-panel-title">📺 Ekran Paylaşımı</span>
-        <button id="screen-panel-close" title="Kapat">✕</button>
+        <button class="screen-hdr-btn" id="screen-fullscreen-btn" title="Tam Ekran">⛶</button>
+        <button class="screen-hdr-btn" id="screen-panel-close" title="Kapat">✕</button>
       </div>
       <video id="screen-video" autoplay playsinline></video>
+    </div>
+
+    <!-- Kalite seçim modalı -->
+    <div id="quality-modal-overlay" class="hidden">
+      <div id="quality-modal">
+        <h3>🖥️ Ekran Paylaşım Kalitesi</h3>
+        <div class="quality-options">
+          <div class="quality-opt" data-quality="low">
+            <div>
+              <div class="quality-opt-label">Düşük — 720p 15fps</div>
+              <div class="quality-opt-desc">Yavaş bağlantılar için, daha az bant genişliği</div>
+            </div>
+          </div>
+          <div class="quality-opt selected" data-quality="normal">
+            <div>
+              <div class="quality-opt-label">Normal — 1080p 30fps</div>
+              <div class="quality-opt-desc">Çoğu durum için önerilen</div>
+            </div>
+          </div>
+          <div class="quality-opt" data-quality="high">
+            <div>
+              <div class="quality-opt-label">Yüksek — 1440p 60fps</div>
+              <div class="quality-opt-desc">Hızlı bağlantı gerektirir, oyun için ideal</div>
+            </div>
+          </div>
+        </div>
+        <div class="quality-modal-btns">
+          <button id="quality-cancel">İptal</button>
+          <button id="quality-start">Paylaşımı Başlat</button>
+        </div>
+      </div>
     </div>
 
     <!-- Ses kilit açma banneri -->

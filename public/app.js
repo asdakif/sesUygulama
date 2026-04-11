@@ -74,12 +74,14 @@ const musicQueueWrap    = $('music-queue-wrap');
 const musicQueueList    = $('music-queue-list');
 const audioUnlockBanner = $('audio-unlock-banner');
 const audioUnlockBtn    = $('audio-unlock-btn');
-const screenShareBtn  = $('screen-share-btn');
-const screenShareLabel= $('screen-share-label');
-const screenPanel     = $('screen-panel');
-const screenVideo     = $('screen-video');
-const screenPanelTitle= $('screen-panel-title');
-const screenPanelClose= $('screen-panel-close');
+const screenShareBtn      = $('screen-share-btn');
+const screenShareLabel    = $('screen-share-label');
+const screenPanel         = $('screen-panel');
+const screenVideo         = $('screen-video');
+const screenPanelTitle    = $('screen-panel-title');
+const screenPanelClose    = $('screen-panel-close');
+const screenFullscreenBtn = $('screen-fullscreen-btn');
+const qualityOverlay      = $('quality-modal-overlay');
 const voiceControls  = $('voice-controls');
 const vcMuteBtn      = $('vc-mute-btn');
 const emojiPicker    = $('emoji-picker');
@@ -567,23 +569,50 @@ musicSkipBtn.addEventListener('click', () => {
 });
 
 // ═══════════════ EKRAN PAYLAŞIMI ═══════════════
-async function startScreenShare() {
+const QUALITY_PRESETS = {
+  low:    { video: { width: 1280, height: 720,  frameRate: 15 }, audioBitrate: 64000,   videoBitrate: 500000  },
+  normal: { video: { width: 1920, height: 1080, frameRate: 30 }, audioBitrate: 128000,  videoBitrate: 2000000 },
+  high:   { video: { width: 2560, height: 1440, frameRate: 60 }, audioBitrate: 128000,  videoBitrate: 6000000 },
+};
+let selectedQuality = 'normal';
+
+// Kalite modalını göster, seçim sonrası paylaşımı başlat
+function startScreenShare() {
   if (isSharing) { stopScreenShare(); return; }
+  qualityOverlay.classList.remove('hidden');
+}
+
+async function doStartScreenShare() {
+  const preset = QUALITY_PRESETS[selectedQuality];
   try {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { ...preset.video, cursor: 'always' },
+      audio: true,
+    });
   } catch {
-    return; // Kullanıcı iptal etti
+    return;
   }
 
   isSharing = true;
   screenShareBtn.classList.add('sharing');
   screenShareLabel.textContent = 'Paylaşımı Durdur';
-
-  // Akış bitince otomatik durdur (tarayıcı "Paylaşımı Durdur" butonuna basınca)
   screenStream.getVideoTracks()[0].onended = () => stopScreenShare();
-
   socket.emit('screen_share_start');
 }
+
+// Kalite modal event'leri
+document.querySelectorAll('.quality-opt').forEach(opt => {
+  opt.addEventListener('click', () => {
+    document.querySelectorAll('.quality-opt').forEach(o => o.classList.remove('selected'));
+    opt.classList.add('selected');
+    selectedQuality = opt.dataset.quality;
+  });
+});
+$('quality-cancel').addEventListener('click', () => qualityOverlay.classList.add('hidden'));
+$('quality-start').addEventListener('click', () => {
+  qualityOverlay.classList.add('hidden');
+  doStartScreenShare();
+});
 
 function stopScreenShare() {
   if (!isSharing) return;
@@ -613,6 +642,17 @@ async function createScreenPeerForViewer(viewerId) {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   socket.emit('screen_offer', { to: viewerId, offer });
+
+  // Bitrate limiti uygula
+  const preset = QUALITY_PRESETS[selectedQuality];
+  pc.getSenders().forEach(sender => {
+    const params = sender.getParameters();
+    if (!params.encodings) params.encodings = [{}];
+    if (sender.track?.kind === 'video') params.encodings[0].maxBitrate = preset.videoBitrate;
+    if (sender.track?.kind === 'audio') params.encodings[0].maxBitrate = preset.audioBitrate;
+    sender.setParameters(params).catch(() => {});
+  });
+
   return pc;
 }
 
@@ -668,9 +708,28 @@ async function createScreenViewConn(sharerId) {
 })();
 
 screenPanelClose.addEventListener('click', () => {
+  screenPanel.classList.remove('fullscreen-mode');
   screenPanel.classList.add('hidden');
   screenVideo.srcObject = null;
   if (screenViewConn) { screenViewConn.close(); screenViewConn = null; }
+});
+
+// Tam ekran
+function toggleScreenFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    screenPanel.requestFullscreen().catch(() => {
+      // Fallback: CSS fullscreen
+      screenPanel.classList.toggle('fullscreen-mode');
+    });
+  }
+}
+screenFullscreenBtn.addEventListener('click', toggleScreenFullscreen);
+screenVideo.addEventListener('dblclick', toggleScreenFullscreen);
+document.addEventListener('fullscreenchange', () => {
+  const isFs = !!document.fullscreenElement;
+  screenFullscreenBtn.textContent = isFs ? '⊠' : '⛶';
 });
 
 screenShareBtn.addEventListener('click', startScreenShare);

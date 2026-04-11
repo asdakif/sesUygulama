@@ -338,7 +338,7 @@ li.active .ch-hash { color: var(--text-2); }
   position: fixed;
   bottom: 80px;
   right: 20px;
-  width: 520px;
+  width: 600px;
   max-width: calc(100vw - 40px);
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
@@ -347,6 +347,17 @@ li.active .ch-hash { color: var(--text-2); }
   box-shadow: 0 16px 48px rgba(0,0,0,.7);
   z-index: 200;
   resize: both;
+  min-width: 320px;
+  min-height: 200px;
+}
+
+#screen-panel.fullscreen-mode {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100vw !important;
+  height: 100vh !important;
+  border-radius: 0;
+  resize: none;
 }
 
 #screen-panel-header {
@@ -357,30 +368,90 @@ li.active .ch-hash { color: var(--text-2); }
   background: var(--bg-secondary);
   cursor: move;
   user-select: none;
+  gap: 8px;
 }
 
 #screen-panel-title {
   color: var(--text-1);
   font-size: .85rem;
   font-weight: 600;
+  flex: 1;
 }
 
-#screen-panel-close {
+.screen-hdr-btn {
   color: var(--text-m);
-  font-size: 1rem;
-  padding: 2px 6px;
+  font-size: .85rem;
+  padding: 3px 8px;
   border-radius: 4px;
   transition: background .1s, color .1s;
+  white-space: nowrap;
 }
-#screen-panel-close:hover { background: var(--red); color: #fff; }
+.screen-hdr-btn:hover { background: var(--bg-hover); color: var(--text-1); }
+
+#screen-panel-close:hover { background: var(--red) !important; color: #fff !important; }
 
 #screen-video {
   width: 100%;
   display: block;
   background: #000;
-  max-height: 320px;
+  max-height: calc(100% - 38px);
+  height: calc(100% - 38px);
   object-fit: contain;
+  cursor: pointer;
 }
+
+/* ── Kalite seçim modalı ── */
+#quality-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+#quality-modal {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 28px 32px;
+  width: min(380px, 92vw);
+  box-shadow: 0 16px 48px rgba(0,0,0,.6);
+}
+#quality-modal h3 {
+  color: var(--text-1);
+  font-size: 1rem;
+  margin-bottom: 16px;
+}
+.quality-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.quality-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: background .1s;
+  border: 2px solid transparent;
+}
+.quality-opt:hover { background: var(--bg-hover); }
+.quality-opt.selected { border-color: var(--accent); }
+.quality-opt-label { color: var(--text-1); font-weight: 600; font-size: .9rem; }
+.quality-opt-desc  { color: var(--text-m); font-size: .78rem; }
+.quality-modal-btns { display: flex; gap: 8px; justify-content: flex-end; }
+.quality-modal-btns button {
+  padding: 9px 20px;
+  border-radius: 6px;
+  font-size: .9rem;
+  font-weight: 600;
+}
+#quality-cancel { background: var(--bg-hover); color: var(--text-2); }
+#quality-start  { background: var(--accent); color: #fff; }
 
 /* ═══════════════ ANA İÇERİK ═══════════════ */
 #main {
