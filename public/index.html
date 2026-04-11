@@ -104,6 +104,7 @@
       <div class="up-info">
         <div class="up-name" id="self-username"></div>
         <div class="up-status">Çevrimiçi</div>
+        <div id="mic-meter" class="hidden"><div id="mic-meter-fill"></div></div>
       </div>
       <div class="up-actions">
         <!-- Mikrofon toggle -->
@@ -147,6 +148,24 @@
             </div>
           </div>
         </div>
+      </div>
+      <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
+        <div class="settings-section-title">MİKROFON KALİTESİ</div>
+        <div class="settings-toggles">
+          <label class="settings-toggle">
+            <span class="settings-toggle-label">Gürültü Bastırma</span>
+            <input type="checkbox" id="toggle-noise" checked />
+          </label>
+          <label class="settings-toggle">
+            <span class="settings-toggle-label">Eko Engelleme</span>
+            <input type="checkbox" id="toggle-echo" checked />
+          </label>
+          <label class="settings-toggle">
+            <span class="settings-toggle-label">Otomatik Kazanç</span>
+            <input type="checkbox" id="toggle-gain" checked />
+          </label>
+        </div>
+        <p class="settings-note">* Değişiklikler bir sonraki sesli kanala katılımda geçerli olur.</p>
       </div>
     </div>
   </div>

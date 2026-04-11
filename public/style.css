@@ -953,3 +953,113 @@ li.active .ch-hash { color: var(--text-2); }
   color: var(--text-m);
   width: 32px;
 }
+
+/* ═══════════════ SES ÖZELLİKLERİ ═══════════════ */
+
+/* Konuşma göstergesi */
+.vc-member-item.speaking .vc-member-avatar {
+  box-shadow: 0 0 0 2px var(--green);
+}
+#self-avatar.speaking {
+  box-shadow: 0 0 0 2px var(--green);
+}
+
+/* Kişi ses kontrolleri */
+.vc-member-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  transition: background .1s;
+}
+.vc-member-item:hover { background: var(--bg-hover); }
+.vc-member-item:hover .vc-peer-controls { display: flex; }
+.vc-peer-controls {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.vc-peer-vol {
+  -webkit-appearance: none;
+  width: 52px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+  cursor: pointer;
+}
+.vc-peer-vol::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+.vc-peer-mute-btn {
+  font-size: .75rem;
+  color: var(--text-m);
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: background .1s;
+  line-height: 1;
+}
+.vc-peer-mute-btn:hover { background: var(--red); color: #fff; }
+.vc-peer-mute-btn.muted  { color: var(--red); }
+.vc-locally-muted { opacity: .4; }
+
+/* Mikrofon metre */
+#mic-meter {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+  width: 100%;
+}
+#mic-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  border-radius: 2px;
+  transition: width .08s;
+}
+
+/* Ayarlar toggle */
+.settings-toggles { display: flex; flex-direction: column; gap: 10px; }
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+}
+.settings-toggle-label { color: var(--text-2); font-size: .88rem; }
+.settings-toggle input[type=checkbox] {
+  width: 36px;
+  height: 20px;
+  -webkit-appearance: none;
+  background: var(--border);
+  border-radius: 10px;
+  position: relative;
+  cursor: pointer;
+  transition: background .2s;
+}
+.settings-toggle input[type=checkbox]:checked { background: var(--accent); }
+.settings-toggle input[type=checkbox]::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  top: 3px;
+  left: 3px;
+  transition: left .2s;
+}
+.settings-toggle input[type=checkbox]:checked::after { left: 19px; }
+.settings-note { color: var(--text-m); font-size: .72rem; margin-top: 8px; }

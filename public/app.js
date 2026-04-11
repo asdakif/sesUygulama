@@ -32,6 +32,12 @@ let currentVoiceRoom  = null;
 let isMuted           = false;
 const peerConnections = new Map(); // socketId → RTCPeerConnection
 const mutedPeers      = new Set();
+const voicePeerIds    = new Map(); // socketId → username
+const locallyMuted    = new Set(); // username → kendi tarafından susturulmuş
+const peerVolumes     = {};        // username → 0-1
+const audioAnalysers  = new Map(); // socketId|'local' → AnalyserNode
+let   speakingTimer   = null;
+const SPEAKING_THR    = 12;        // 0-255 eşik
 
 const ICE = { iceServers: [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -758,11 +764,27 @@ async function joinVoiceChannel(room) {
   if (currentVoiceRoom) await leaveVoiceChannel();
 
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        noiseSuppression: ($('toggle-noise')?.checked ?? true),
+        echoCancellation: ($('toggle-echo')?.checked  ?? true),
+        autoGainControl:  ($('toggle-gain')?.checked  ?? true),
+      },
+      video: false,
+    });
   } catch (err) {
     alert('Mikrofona erişim izni reddedildi: ' + err.message);
     return;
   }
+  // Local mikrofon analizi (konuşma göstergesi + metre)
+  try {
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(localStream);
+    const an  = ctx.createAnalyser();
+    an.fftSize = 256;
+    src.connect(an);
+    audioAnalysers.set('local', an);
+  } catch {}
 
   currentVoiceRoom = room;
   audioUnlocked = true;
@@ -771,6 +793,7 @@ async function joinVoiceChannel(room) {
   sounds.voiceJoin();
   updateVoiceUI();
   applyVoiceMode();
+  startSpeakingDetection();
 }
 
 async function leaveVoiceChannel() {
@@ -780,6 +803,11 @@ async function leaveVoiceChannel() {
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   currentVoiceRoom = null;
   pttActive = false;
+  audioAnalysers.clear();
+  voicePeerIds.clear();
+  clearInterval(speakingTimer);
+  speakingTimer = null;
+  $('mic-meter')?.classList.add('hidden');
   applyMusicState({ current: null });
   sounds.voiceLeave();
   updateVoiceUI();
@@ -809,6 +837,20 @@ async function createPeer(peerId, initiator) {
       document.body.append(audio);
     }
     audio.srcObject = ev.streams[0];
+    const username = voicePeerIds.get(peerId);
+    if (username) {
+      audio.volume   = peerVolumes[username] ?? 1;
+      audio.muted    = locallyMuted.has(username);
+    }
+    // Konuşma analizi
+    try {
+      const ctx = new AudioContext();
+      const src = ctx.createMediaStreamSource(ev.streams[0]);
+      const an  = ctx.createAnalyser();
+      an.fftSize = 256;
+      src.connect(an);
+      audioAnalysers.set(peerId, an);
+    } catch {}
   };
 
   pc.onicecandidate = (ev) => {
@@ -834,6 +876,44 @@ async function createPeer(peerId, initiator) {
 
 function removeAudio(peerId) {
   document.getElementById(`audio-${peerId}`)?.remove();
+  audioAnalysers.delete(peerId);
+  voicePeerIds.delete(peerId);
+}
+
+function getLevel(analyser) {
+  const d = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(d);
+  return d.reduce((a, b) => a + b, 0) / d.length;
+}
+
+function setSpeaking(username, on) {
+  document.querySelectorAll('.vc-member-item').forEach(li => {
+    if (li.dataset.username === username) li.classList.toggle('speaking', on);
+  });
+  if (username === currentUser) $('self-avatar')?.classList.toggle('speaking', on);
+}
+
+function startSpeakingDetection() {
+  clearInterval(speakingTimer);
+  $('mic-meter')?.classList.remove('hidden');
+  speakingTimer = setInterval(() => {
+    // Local
+    const localAn = audioAnalysers.get('local');
+    if (localAn) {
+      const lvl = getLevel(localAn);
+      const talking = lvl > SPEAKING_THR && (voiceMode === 'vad' || pttActive);
+      setSpeaking(currentUser, talking);
+      const pct = Math.min(100, lvl * 2);
+      const fill = $('mic-meter-fill');
+      if (fill) fill.style.width = pct + '%';
+    }
+    // Remote peers
+    for (const [sid, an] of audioAnalysers) {
+      if (sid === 'local') continue;
+      const uname = voicePeerIds.get(sid);
+      if (uname) setSpeaking(uname, getLevel(an) > SPEAKING_THR);
+    }
+  }, 80);
 }
 
 function updateVoiceUI() {
@@ -916,8 +996,16 @@ document.addEventListener('keyup', (e) => {
 // ── Ayarlar modalı ───────────────────────────────────────────────────────────
 const settingsOverlay = $('settings-overlay');
 
+// Kayıtlı toggle değerlerini yükle
+['noise','echo','gain'].forEach(key => {
+  const el = $(`toggle-${key}`);
+  if (!el) return;
+  const saved = localStorage.getItem(`audio-${key}`);
+  if (saved !== null) el.checked = saved === 'true';
+  el.addEventListener('change', () => localStorage.setItem(`audio-${key}`, el.checked));
+});
+
 $('settings-btn').addEventListener('click', () => {
-  // Mevcut seçimi göster
   document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(o => {
     o.classList.toggle('selected', o.dataset.voiceMode === voiceMode);
   });
@@ -960,20 +1048,81 @@ function updateVoiceRoomsUI(state) {
     el.innerHTML = '';
     for (const username of users) {
       const li = document.createElement('li');
+      li.className = 'vc-member-item';
+      li.dataset.username = username;
+      if (locallyMuted.has(username)) li.classList.add('vc-locally-muted');
+
       const av = document.createElement('div');
       av.className = 'vc-member-avatar';
       av.style.background = avatarColor(username);
       av.textContent = username[0].toUpperCase();
+
       const name = document.createElement('span');
       name.textContent = username;
+      name.style.flex = '1';
+      name.style.fontSize = '.82rem';
+      name.style.color = 'var(--text-2)';
+
       li.append(av, name);
+
       if (mutedPeers.has(username)) {
         const icon = document.createElement('span');
         icon.className = 'vc-muted-icon';
-        icon.title = 'Sessiz';
         icon.textContent = '🔇';
         li.append(icon);
       }
+
+      // Kendi satırı değilse ses kontrolleri
+      if (username !== currentUser) {
+        const controls = document.createElement('div');
+        controls.className = 'vc-peer-controls';
+
+        // Ses slider
+        const vol = document.createElement('input');
+        vol.type = 'range'; vol.min = 0; vol.max = 150; vol.className = 'vc-peer-vol';
+        vol.value = Math.round((peerVolumes[username] ?? 1) * 100);
+        vol.title = 'Ses seviyesi';
+        vol.addEventListener('input', () => {
+          const v = parseInt(vol.value) / 100;
+          peerVolumes[username] = v;
+          // Tüm audio elementleri bul (socketId → username eşleşmesi)
+          for (const [sid, uname] of voicePeerIds) {
+            if (uname === username) {
+              const audio = document.getElementById(`audio-${sid}`);
+              if (audio) audio.volume = Math.min(v, 1); // audio.volume max 1
+            }
+          }
+        });
+
+        // Sustur butonu
+        const muteBtn = document.createElement('button');
+        muteBtn.className = 'vc-peer-mute-btn' + (locallyMuted.has(username) ? ' muted' : '');
+        muteBtn.textContent = locallyMuted.has(username) ? '🔇' : '🔊';
+        muteBtn.title = 'Beni için sustur/aç';
+        muteBtn.addEventListener('click', () => {
+          if (locallyMuted.has(username)) {
+            locallyMuted.delete(username);
+            muteBtn.textContent = '🔊';
+            muteBtn.classList.remove('muted');
+            li.classList.remove('vc-locally-muted');
+          } else {
+            locallyMuted.add(username);
+            muteBtn.textContent = '🔇';
+            muteBtn.classList.add('muted');
+            li.classList.add('vc-locally-muted');
+          }
+          for (const [sid, uname] of voicePeerIds) {
+            if (uname === username) {
+              const audio = document.getElementById(`audio-${sid}`);
+              if (audio) audio.muted = locallyMuted.has(username);
+            }
+          }
+        });
+
+        controls.append(vol, muteBtn);
+        li.append(controls);
+      }
+
       el.append(li);
     }
   }
@@ -1087,11 +1236,14 @@ function setupSocket() {
   socket.on('voice_rooms_state', (state) => updateVoiceRoomsUI(state));
 
   socket.on('voice_peers', async ({ peers }) => {
-    for (const peer of peers) await createPeer(peer.socketId, true);
+    for (const peer of peers) {
+      voicePeerIds.set(peer.socketId, peer.username);
+      await createPeer(peer.socketId, true);
+    }
   });
 
-  socket.on('voice_peer_joined', async ({ socketId }) => {
-    // Onlar bize offer gönderecek, bekliyoruz
+  socket.on('voice_peer_joined', async ({ socketId, username }) => {
+    if (username) voicePeerIds.set(socketId, username);
   });
 
   socket.on('voice_offer', async ({ from, offer }) => {

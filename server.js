@@ -389,8 +389,7 @@ io.on('connection', (socket) => {
 
     // Mevcut katılımcılara yeni kullanıcıyı bildir
     socket.to(`voice:${room}`).emit('voice_peer_joined', {
-      socketId: socket.id,
-      username: user.username,
+      socketId: socket.id, username: user.username,
     });
 
     broadcastVoiceRooms();
