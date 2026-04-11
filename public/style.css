@@ -1063,3 +1063,19 @@ li.active .ch-hash { color: var(--text-2); }
 }
 .settings-toggle input[type=checkbox]:checked::after { left: 19px; }
 .settings-note { color: var(--text-m); font-size: .72rem; margin-top: 8px; }
+
+/* Ses kanalı + butonu */
+.channel-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#add-voice-channel-btn {
+  color: var(--text-m);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 4px;
+  transition: color .1s, background .1s;
+}
+#add-voice-channel-btn:hover { color: var(--text-1); background: var(--bg-hover); }

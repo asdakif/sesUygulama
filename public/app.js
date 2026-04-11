@@ -865,6 +865,36 @@ async function createPeer(peerId, initiator) {
     }
   };
 
+  // Bağlantı kalitesi — 5sn'de bir RTT ölç
+  const qualityInterval = setInterval(async () => {
+    if (!peerConnections.has(peerId)) { clearInterval(qualityInterval); return; }
+    try {
+      const stats = await pc.getStats();
+      stats.forEach(s => {
+        if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.currentRoundTripTime !== undefined) {
+          const rtt = s.currentRoundTripTime * 1000; // ms
+          const dot = rtt < 80 ? '🟢' : rtt < 200 ? '🟡' : '🔴';
+          const username = voicePeerIds.get(peerId);
+          if (username) {
+            document.querySelectorAll('.vc-member-item').forEach(li => {
+              if (li.dataset.username === username) {
+                let badge = li.querySelector('.quality-badge');
+                if (!badge) {
+                  badge = document.createElement('span');
+                  badge.className = 'quality-badge';
+                  badge.style.cssText = 'font-size:.7rem;margin-left:2px;';
+                  li.querySelector('span')?.after(badge);
+                }
+                badge.textContent = dot;
+                badge.title = `${Math.round(rtt)}ms`;
+              }
+            });
+          }
+        }
+      });
+    } catch {}
+  }, 5000);
+
   if (initiator) {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -1233,6 +1263,7 @@ function setupSocket() {
   });
 
   // Sesli kanal
+  socket.on('voice_channels_list', (channels) => renderVoiceChannels(channels));
   socket.on('voice_rooms_state', (state) => updateVoiceRoomsUI(state));
 
   socket.on('voice_peers', async ({ peers }) => {
@@ -1360,9 +1391,20 @@ loginForm.addEventListener('submit', async (e) => {
   currentUser      = username;
   currentChannelId = currentChannels[0].id;
 
+  const savedCreds = { username, password: passwordInput.value };
+
   socket = io();
   setupSocket();
-  socket.emit('join', { username, password: passwordInput.value, channelId: currentChannelId });
+  socket.emit('join', { ...savedCreds, channelId: currentChannelId });
+
+  // Otomatik yeniden bağlanma
+  socket.on('connect', () => {
+    if (!currentUser) return; // henüz giriş yapılmamış
+    socket.emit('join', { ...savedCreds, channelId: currentChannelId });
+    if (currentVoiceRoom) {
+      setTimeout(() => socket.emit('voice_join', { room: currentVoiceRoom }), 500);
+    }
+  });
 
   // SoundCloud API'yi ancak giriş sonrası yükle
   loadScApi();
@@ -1432,19 +1474,69 @@ messageInput.addEventListener('input', () => {
   }
 });
 
-// ═══════════════ SESLİ KANAL BUTONLARI ═══════════════
-document.querySelectorAll('.voice-channel-item').forEach(li => {
-  // Kanala tıklayınca katıl (leave butonuna tıklamak hariç)
-  li.addEventListener('click', (e) => {
-    if (e.target.closest('.vc-leave-btn')) return;
-    joinVoiceChannel(li.dataset.room);
-  });
+// ═══════════════ SESLİ KANAL BUTONLARI (dinamik) ═══════════════
+const vcList = $('voice-channel-list');
+
+function buildVoiceChannelItem(room) {
+  const li = document.createElement('li');
+  li.className = 'voice-channel-item';
+  li.dataset.room = room;
+  if (room === currentVoiceRoom) li.classList.add('active');
+
+  const row = document.createElement('div');
+  row.className = 'vc-row';
+
+  row.innerHTML = `
+    <svg class="vc-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+      <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+    </svg>
+    <span>${room}</span>
+  `;
 
   // Leave butonu
-  li.querySelector('.vc-leave-btn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    leaveVoiceChannel();
+  const leaveBtn = document.createElement('button');
+  leaveBtn.className = 'vc-leave-btn';
+  leaveBtn.title = 'Kanaldan Ayrıl';
+  leaveBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24c1.12.37 2.33.57 3.58.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.58a1 1 0 0 1-.25 1.01l-2.2 2.2z"/></svg>`;
+  leaveBtn.addEventListener('click', (e) => { e.stopPropagation(); leaveVoiceChannel(); });
+
+  // Sil butonu (varsayılan kanallar hariç)
+  if (!['sesli-genel','sesli-oyun'].includes(room)) {
+    const delBtn = document.createElement('button');
+    delBtn.className = 'vc-leave-btn';
+    delBtn.title = 'Kanalı Sil';
+    delBtn.style.cssText = 'font-size:.8rem;padding:2px 5px;';
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      socket.emit('delete_voice_channel', { name: room });
+    });
+    row.append(leaveBtn, delBtn);
+  } else {
+    row.append(leaveBtn);
+  }
+
+  const members = document.createElement('ul');
+  members.className = 'vc-members';
+  members.id = `vm-${room}`;
+
+  li.append(row, members);
+  li.addEventListener('click', (e) => {
+    if (e.target.closest('.vc-leave-btn')) return;
+    joinVoiceChannel(room);
   });
+  return li;
+}
+
+function renderVoiceChannels(channels) {
+  vcList.innerHTML = '';
+  channels.forEach(room => vcList.append(buildVoiceChannelItem(room)));
+}
+
+// Kanal ekleme
+$('add-voice-channel-btn').addEventListener('click', () => {
+  const name = prompt('Kanal adı (örn: sesli-müzik):');
+  if (name) socket.emit('create_voice_channel', { name });
 });
 
 vcMuteBtn.addEventListener('click', toggleMute);

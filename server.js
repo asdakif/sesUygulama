@@ -187,9 +187,12 @@ function getSocketIdByUsername(username) {
 
 // ─── Sesli kanal durumu ──────────────────────────────────────────────────────
 // roomName → Map<socketId, { username }>
-const VOICE_ROOMS = ['sesli-genel', 'sesli-oyun'];
-const voiceRooms  = new Map();
-for (const r of VOICE_ROOMS) voiceRooms.set(r, new Map());
+const voiceRooms = new Map();
+['sesli-genel', 'sesli-oyun'].forEach(r => voiceRooms.set(r, new Map()));
+
+function broadcastVoiceChannelList() {
+  io.emit('voice_channels_list', [...voiceRooms.keys()]);
+}
 
 function broadcastVoiceRooms() {
   const state = {};
@@ -243,6 +246,7 @@ io.on('connection', (socket) => {
       messages: db.getMessages(channelId),
       channelId,
     });
+    socket.emit('voice_channels_list', [...voiceRooms.keys()]);
     socket.emit('voice_rooms_state', Object.fromEntries(
       [...voiceRooms].map(([n, m]) => [n, [...m.values()].map(u => u.username)])
     ));
@@ -396,6 +400,25 @@ io.on('connection', (socket) => {
   });
 
   socket.on('voice_leave', () => leaveAllVoiceRooms(socket));
+
+  socket.on('create_voice_channel', ({ name }) => {
+    if (!connectedUsers.get(socket.id)) return;
+    name = name?.trim().toLowerCase().replace(/[^a-z0-9ğüşıöç-]/g, '-').slice(0, 24);
+    if (!name || voiceRooms.has(name) || voiceRooms.size >= 10) return;
+    voiceRooms.set(name, new Map());
+    broadcastVoiceChannelList();
+    broadcastVoiceRooms();
+  });
+
+  socket.on('delete_voice_channel', ({ name }) => {
+    if (!connectedUsers.get(socket.id)) return;
+    if (!voiceRooms.has(name)) return;
+    if (['sesli-genel', 'sesli-oyun'].includes(name)) return; // varsayılanlar silinemez
+    if ((voiceRooms.get(name)?.size ?? 0) > 0) return; // dolu kanal silinemez
+    voiceRooms.delete(name);
+    broadcastVoiceChannelList();
+    broadcastVoiceRooms();
+  });
 
   // WebRTC sinyalleme — sadece yönlendir
   socket.on('voice_offer',     ({ to, offer })     =>
