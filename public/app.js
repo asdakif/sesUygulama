@@ -1161,6 +1161,11 @@ function updateVoiceRoomsUI(state) {
 // ═══════════════ SOCKET OLAYLARI ═══════════════
 function setupSocket() {
   socket.on('auth_error', ({ message }) => {
+    // Zaten giriş yapılmışsa (auto-reconnect race condition) sayfayı yenile
+    if (currentUser && appEl.classList.contains('_shown')) {
+      location.reload();
+      return;
+    }
     loginError.textContent = message;
     $('join-btn').disabled = false;
     socket.disconnect();
@@ -1363,6 +1368,8 @@ function setupSocket() {
     leaveVoiceChannel();
     stopScreenShare();
   });
+
+  setupPokerSocket();
 }
 
 // ═══════════════ GİRİŞ ═══════════════
@@ -1541,3 +1548,242 @@ $('add-voice-channel-btn').addEventListener('click', () => {
 
 vcMuteBtn.addEventListener('click', toggleMute);
 micBtn.addEventListener('click', toggleMute);
+
+// ═══════════════ POKER ═══════════════
+let pokerState = null;
+let pokerOpen  = false;
+
+const pokerOverlay    = $('poker-overlay');
+const pokerPot        = $('poker-pot');
+const pokerPhaseLabel = $('poker-phase-label');
+const pokerCommunity  = $('poker-community-cards');
+const pokerSeats      = $('poker-seats');
+const pokerMyArea     = $('poker-my-area');
+const pokerHoleCards  = $('poker-hole-cards');
+const pokerMyChips    = $('poker-my-chips');
+const pokerMyBet      = $('poker-my-bet');
+const pokerWinnerBanner = $('poker-winner-banner');
+const pokerActions    = $('poker-actions');
+const pokerLobby      = $('poker-lobby');
+const pokerSeatCount  = $('poker-seat-count');
+const pokerLobbyPlayers = $('poker-lobby-players');
+const pokerJoinBtn    = $('poker-join-btn');
+const pokerLeaveBtn   = $('poker-leave-btn');
+const pokerStartBtn   = $('poker-start-btn');
+const pokerFoldBtn    = $('poker-fold-btn');
+const pokerCheckBtn   = $('poker-check-btn');
+const pokerCallBtn    = $('poker-call-btn');
+const pokerCallAmt    = $('poker-call-amt');
+const pokerRaiseBtn   = $('poker-raise-btn');
+const pokerRaiseSlider = $('poker-raise-slider');
+const pokerRaiseAmt   = $('poker-raise-amt');
+
+const CARD_SUIT = { S:'♠', H:'♥', D:'♦', C:'♣' };
+const CARD_VAL  = { 11:'J', 12:'Q', 13:'K', 14:'A' };
+const PHASE_TR  = { waiting:'Bekleniyor', preflop:'Preflop', flop:'Flop', turn:'Turn', river:'River', showdown:'Sonuç' };
+
+function cardEl(card) {
+  const div = document.createElement('div');
+  div.className = 'poker-card';
+  if (!card) { div.className += ' card-back'; div.textContent = '🂠'; return div; }
+  const red = card.s === 'H' || card.s === 'D';
+  if (red) div.classList.add('red');
+  const val = CARD_VAL[card.v] || card.v;
+  div.innerHTML = `<span class="card-val">${val}</span><span class="card-suit">${CARD_SUIT[card.s]}</span>`;
+  return div;
+}
+
+function renderPoker(state) {
+  pokerState = state;
+
+  if (!state) {
+    // No table exists
+    pokerLobby.classList.remove('hidden');
+    pokerCommunity.innerHTML = '';
+    pokerSeats.innerHTML = '';
+    pokerMyArea.classList.add('hidden');
+    pokerActions.classList.add('hidden');
+    pokerWinnerBanner.classList.add('hidden');
+    pokerSeatCount.textContent = '0';
+    pokerLobbyPlayers.innerHTML = '';
+    pokerJoinBtn.classList.remove('hidden');
+    pokerLeaveBtn.classList.add('hidden');
+    pokerStartBtn.classList.add('hidden');
+    pokerPot.textContent = '0';
+    pokerPhaseLabel.textContent = '';
+    return;
+  }
+
+  const mySeat = state.seats.find(s => s.socketId === socket?.id);
+  const myTurn = state.turn === socket?.id;
+
+  // Phase & pot
+  pokerPot.textContent = state.pot;
+  pokerPhaseLabel.textContent = PHASE_TR[state.phase] || state.phase;
+
+  // Community cards
+  pokerCommunity.innerHTML = '';
+  const needed = { preflop:0, flop:3, turn:4, river:5, showdown:5, waiting:0 }[state.phase] || 0;
+  for (let i=0;i<5;i++) {
+    pokerCommunity.append(cardEl(i < state.community.length ? state.community[i] : null));
+  }
+
+  // Seats
+  pokerSeats.innerHTML = '';
+  for (const s of state.seats) {
+    if (s.socketId === socket?.id) continue; // own area rendered separately
+    const div = document.createElement('div');
+    div.className = 'poker-seat' + (s.folded?' folded':'') + (state.turn===s.socketId?' myturn':'');
+    const dealer = state.seats[state.dealer]?.socketId === s.socketId;
+    div.innerHTML = `
+      <div class="ps-name">${s.username}${dealer?' <span class="dealer-btn">D</span>':''}</div>
+      <div class="ps-chips">💰 ${s.chips} ${s.allIn?'<em>ALL-IN</em>':''}</div>
+      ${s.bet>0?`<div class="ps-bet">Bet: ${s.bet}</div>`:''}
+      <div class="ps-cards">${(s.hand||[]).map(c=>cardEl(c).outerHTML).join('')}</div>
+    `;
+    // Rebuild cardEls properly (outerHTML trick)
+    const cardsDiv = div.querySelector('.ps-cards');
+    cardsDiv.innerHTML = '';
+    (s.hand||[null,null]).forEach(c => cardsDiv.append(cardEl(c)));
+    pokerSeats.append(div);
+  }
+
+  // My area
+  if (mySeat) {
+    pokerMyArea.classList.remove('hidden');
+    pokerHoleCards.innerHTML = '';
+    (mySeat.hand||[]).forEach(c => pokerHoleCards.append(cardEl(c)));
+    pokerMyChips.textContent = `💰 ${mySeat.chips} chip`;
+    pokerMyBet.textContent   = mySeat.bet > 0 ? `Bet: ${mySeat.bet}` : '';
+  } else {
+    pokerMyArea.classList.add('hidden');
+  }
+
+  // Winner banner
+  if (state.phase === 'showdown' && state.winner) {
+    pokerWinnerBanner.classList.remove('hidden');
+    const names = state.winner.map(id => state.seats.find(s=>s.socketId===id)?.username || id);
+    pokerWinnerBanner.textContent = `🏆 ${names.join(' & ')} kazandı! (${state.winnerHand})`;
+  } else {
+    pokerWinnerBanner.classList.add('hidden');
+  }
+
+  // Lobby section (waiting phase)
+  if (state.phase === 'waiting') {
+    pokerLobby.classList.remove('hidden');
+    pokerSeatCount.textContent = state.seats.length;
+    pokerLobbyPlayers.innerHTML = '';
+    for (const s of state.seats) {
+      const li = document.createElement('div');
+      li.className = 'poker-lobby-player';
+      li.textContent = `${s.username} — ${s.chips} chip`;
+      pokerLobbyPlayers.append(li);
+    }
+    if (mySeat) {
+      pokerJoinBtn.classList.add('hidden');
+      pokerLeaveBtn.classList.remove('hidden');
+      pokerStartBtn.classList.toggle('hidden', state.seats.length < 2);
+    } else {
+      pokerJoinBtn.classList.toggle('hidden', state.seats.length >= 6);
+      pokerLeaveBtn.classList.add('hidden');
+      pokerStartBtn.classList.add('hidden');
+    }
+    pokerActions.classList.add('hidden');
+  } else {
+    pokerLobby.classList.add('hidden');
+    pokerActions.classList.remove('hidden');
+
+    // Show/hide action buttons
+    const inGame = mySeat && !mySeat.folded && state.phase !== 'showdown';
+    pokerActions.classList.toggle('hidden', !inGame);
+    pokerFoldBtn.textContent = 'Fold';
+    pokerFoldBtn.disabled = false;
+
+    if (inGame && myTurn) {
+      const canCheck = mySeat.bet === state.currentBet;
+      const callAmount = Math.min(state.currentBet - mySeat.bet, mySeat.chips);
+      pokerCheckBtn.classList.toggle('hidden', !canCheck);
+      pokerCallBtn.classList.toggle('hidden', canCheck || callAmount <= 0);
+      pokerCallAmt.textContent = callAmount > 0 ? `(${callAmount})` : '';
+      const maxRaise = mySeat.chips + mySeat.bet;
+      const minRaiseTotal = Math.min(state.currentBet + state.minRaise, maxRaise);
+      pokerRaiseSlider.min = minRaiseTotal;
+      pokerRaiseSlider.max = maxRaise;
+      pokerRaiseSlider.value = Math.min(Math.max(parseInt(pokerRaiseSlider.value)||minRaiseTotal, minRaiseTotal), maxRaise);
+      pokerRaiseAmt.textContent = pokerRaiseSlider.value;
+      $('poker-raise-row').classList.toggle('hidden', maxRaise <= state.currentBet - mySeat.bet + 1);
+      pokerFoldBtn.disabled = false;
+      pokerCheckBtn.disabled = false;
+      pokerCallBtn.disabled = false;
+    } else if (inGame) {
+      // Not our turn — show fold but disabled, hide check/call/raise
+      pokerFoldBtn.textContent = 'Sıra Bekleniyor...';
+      pokerFoldBtn.disabled = true;
+      pokerCheckBtn.classList.add('hidden');
+      pokerCallBtn.classList.add('hidden');
+      $('poker-raise-row').classList.add('hidden');
+    }
+  }
+}
+
+function openPokerPanel() {
+  pokerOverlay.classList.remove('hidden');
+  pokerOpen = true;
+  if (socket) socket.emit('poker_request_state');
+}
+function closePokerPanel() {
+  pokerOverlay.classList.add('hidden');
+  pokerOpen = false;
+}
+
+$('poker-open-btn').addEventListener('click', openPokerPanel);
+$('poker-close').addEventListener('click', closePokerPanel);
+pokerOverlay.addEventListener('click', e => { if (e.target === pokerOverlay) closePokerPanel(); });
+
+pokerJoinBtn.addEventListener('click', () => socket?.emit('poker_join'));
+pokerLeaveBtn.addEventListener('click', () => socket?.emit('poker_leave'));
+pokerStartBtn.addEventListener('click', () => socket?.emit('poker_start'));
+pokerFoldBtn.addEventListener('click', () => socket?.emit('poker_action', { action:'fold' }));
+pokerCheckBtn.addEventListener('click', () => socket?.emit('poker_action', { action:'check' }));
+pokerCallBtn.addEventListener('click', () => socket?.emit('poker_action', { action:'call' }));
+pokerRaiseBtn.addEventListener('click', () => {
+  socket?.emit('poker_action', { action:'raise', amount: parseInt(pokerRaiseSlider.value) });
+});
+pokerRaiseSlider.addEventListener('input', () => { pokerRaiseAmt.textContent = pokerRaiseSlider.value; });
+
+// Socket events
+function setupPokerSocket() {
+  socket.on('poker_state', state => {
+    if (pokerOpen) renderPoker(state);
+    else pokerState = state;
+  });
+  socket.on('poker_error', msg => {
+    if (pokerOpen) {
+      const err = document.createElement('div');
+      err.style.cssText = 'color:var(--red);font-size:.8rem;margin-top:4px;text-align:center;';
+      err.textContent = '⚠️ ' + msg;
+      pokerLobby.append(err);
+      setTimeout(() => err.remove(), 3000);
+    }
+  });
+}
+
+// Hook into /poker command
+const _origSubmit = messageForm.onsubmit;
+messageForm.addEventListener('submit', async (e2) => {
+  // Note: the original submit handler is already attached; we just handle /poker here
+}, true); // capture phase won't work this way
+
+// Override message submit to handle /poker command
+// We insert a check at the TOP by modifying the existing handler indirectly:
+// Instead, patch the message input handler via an interceptor on the form
+const _pokerFormInterceptor = (e) => {
+  const content = messageInput.value.trim();
+  if (content === '/poker') {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    messageInput.value = '';
+    openPokerPanel();
+  }
+};
+messageForm.addEventListener('submit', _pokerFormInterceptor, true);

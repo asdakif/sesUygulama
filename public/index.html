@@ -153,6 +153,8 @@
       <span id="channel-name-display">kanal</span>
       <span id="channel-desc-display" class="channel-desc"></span>
       <div id="header-actions">
+        <!-- Poker -->
+        <button class="hdr-btn" id="poker-open-btn" title="Poker Oyna">🃏 Poker</button>
         <!-- Ekran paylaşımı -->
         <button class="hdr-btn" id="screen-share-btn" title="Ekranı Paylaş">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
@@ -280,6 +282,63 @@
       </form>
     </div>
 
+  </div>
+</div>
+
+<!-- ═══════════════ POKER MODAL ═══════════════ -->
+<div id="poker-overlay" class="hidden">
+  <div id="poker-modal">
+    <div id="poker-header">
+      <span>🃏 Texas Hold'em</span>
+      <div id="poker-header-info">
+        <span id="poker-pot-label">Pot: <strong id="poker-pot">0</strong></span>
+        <span id="poker-phase-label"></span>
+      </div>
+      <button id="poker-close">✕</button>
+    </div>
+
+    <!-- Community Cards -->
+    <div id="poker-community-wrap">
+      <div id="poker-community-cards"></div>
+    </div>
+
+    <!-- Seats -->
+    <div id="poker-seats"></div>
+
+    <!-- My hand -->
+    <div id="poker-my-area" class="hidden">
+      <div id="poker-hole-cards"></div>
+      <div id="poker-my-info">
+        <span id="poker-my-chips"></span>
+        <span id="poker-my-bet"></span>
+      </div>
+    </div>
+
+    <!-- Winner banner -->
+    <div id="poker-winner-banner" class="hidden"></div>
+
+    <!-- Actions -->
+    <div id="poker-actions" class="hidden">
+      <button id="poker-fold-btn" class="poker-action-btn danger">Fold</button>
+      <button id="poker-check-btn" class="poker-action-btn">Check</button>
+      <button id="poker-call-btn" class="poker-action-btn accent">Call <span id="poker-call-amt"></span></button>
+      <div id="poker-raise-row">
+        <button id="poker-raise-btn" class="poker-action-btn accent">Raise</button>
+        <input type="range" id="poker-raise-slider" min="20" max="1000" step="10" value="40" />
+        <span id="poker-raise-amt">40</span>
+      </div>
+    </div>
+
+    <!-- Lobby -->
+    <div id="poker-lobby">
+      <div id="poker-lobby-info">Masada <span id="poker-seat-count">0</span>/6 oyuncu</div>
+      <div id="poker-lobby-players"></div>
+      <div id="poker-lobby-btns">
+        <button id="poker-join-btn" class="poker-action-btn accent">Masaya Otur (1000 chip)</button>
+        <button id="poker-leave-btn" class="poker-action-btn danger hidden">Masadan Kalk</button>
+        <button id="poker-start-btn" class="poker-action-btn hidden">Oyunu Başlat</button>
+      </div>
+    </div>
   </div>
 </div>
 

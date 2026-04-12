@@ -213,6 +213,184 @@ function leaveAllVoiceRooms(socket) {
   broadcastVoiceRooms();
 }
 
+// ─── POKER ───────────────────────────────────────────────────────────────────
+const SMALL_BLIND      = 10;
+const BIG_BLIND        = 20;
+const START_CHIPS      = 1000;
+const MAX_POKER_SEATS  = 6;
+let poker              = null;
+
+function createDeck() {
+  const d = [];
+  for (const s of ['S','H','D','C']) for (let v=2;v<=14;v++) d.push({v,s});
+  return d;
+}
+function shuffle(d) {
+  for (let i=d.length-1;i>0;i--) {
+    const j=Math.floor(Math.random()*(i+1));
+    [d[i],d[j]]=[d[j],d[i]];
+  }
+  return d;
+}
+
+function evalFive(cards) {
+  const v=cards.map(c=>c.v).sort((a,b)=>b-a);
+  const flush=new Set(cards.map(c=>c.s)).size===1;
+  const freq={};
+  for (const x of v) freq[x]=(freq[x]||0)+1;
+  const g=Object.entries(freq).sort((a,b)=>b[1]-a[1]||b[0]-a[0]).map(([x,c])=>({v:+x,c}));
+  const strHi=(()=>{
+    if (new Set(v).size<5) return 0;
+    if (v[0]-v[4]===4) return v[0];
+    if (v[0]===14&&v[1]===5&&v[2]===4&&v[3]===3&&v[4]===2) return 5;
+    return 0;
+  })();
+  if (flush&&strHi) return [8,strHi];
+  if (g[0].c===4) return [7,g[0].v,g[1].v];
+  if (g[0].c===3&&g[1]?.c===2) return [6,g[0].v,g[1].v];
+  if (flush) return [5,...v];
+  if (strHi) return [4,strHi];
+  if (g[0].c===3) return [3,g[0].v,g[1].v,g[2].v];
+  if (g[0].c===2&&g[1]?.c===2) return [2,g[0].v,g[1].v,g[2].v];
+  if (g[0].c===2) return [1,g[0].v,g[1].v,g[2].v,g[3].v];
+  return [0,...v];
+}
+function bestHand(hole,comm) {
+  const all=[...hole,...comm];
+  let best=null;
+  for (let i=0;i<all.length;i++) for (let j=i+1;j<all.length;j++) {
+    const five=all.filter((_,k)=>k!==i&&k!==j);
+    const h=evalFive(five);
+    if (!best||cmpH(h,best)>0) best=h;
+  }
+  return best;
+}
+function cmpH(a,b) {
+  for (let i=0;i<Math.max(a.length,b.length);i++) {
+    if ((a[i]||0)!==(b[i]||0)) return (a[i]||0)-(b[i]||0);
+  }
+  return 0;
+}
+const HAND_NAMES=['High Card','Pair','Two Pair','Three of a Kind','Straight','Flush','Full House','Four of a Kind','Straight Flush'];
+
+function pokerActive(p)      { return p.seats.filter(s=>!s.folded); }
+function pokerActiveNonAllIn(p) { return p.seats.filter(s=>!s.folded&&!s.allIn); }
+
+function broadcastPoker() {
+  if (!poker) { io.emit('poker_state', null); return; }
+  const pub = {
+    seats: poker.seats.map(s=>({
+      socketId:s.socketId, username:s.username,
+      chips:s.chips, bet:s.bet, folded:s.folded, allIn:s.allIn, hand:null,
+    })),
+    community: poker.community,
+    pot:        poker.pot,
+    phase:      poker.phase,
+    turn:       poker.turn,
+    currentBet: poker.currentBet,
+    minRaise:   poker.minRaise,
+    dealer:     poker.dealer,
+    toAct:      [...poker.toAct],
+    winner:     poker.winner   || null,
+    winnerHand: poker.winnerHand || null,
+  };
+  for (const seat of poker.seats) {
+    const state = { ...pub, seats: pub.seats.map((s,i)=>({
+      ...s,
+      hand: (s.socketId===seat.socketId||poker.phase==='showdown')
+        ? poker.seats[i].hand : poker.seats[i].hand.map(()=>null),
+    }))};
+    io.to(seat.socketId).emit('poker_state', state);
+  }
+}
+
+function pokerNextTurn() {
+  if (!poker || poker.toAct.size===0) { pokerEndRound(); return; }
+  const seats=poker.seats;
+  const cur=seats.findIndex(s=>s.socketId===poker.turn);
+  for (let i=1;i<=seats.length;i++) {
+    const next=seats[(cur+i)%seats.length];
+    if (poker.toAct.has(next.socketId)) { poker.turn=next.socketId; broadcastPoker(); return; }
+  }
+  pokerEndRound();
+}
+
+function pokerEndRound() {
+  if (!poker) return;
+  for (const s of poker.seats) s.bet=0;
+  poker.currentBet=0; poker.minRaise=BIG_BLIND;
+
+  const active=pokerActive(poker);
+  if (active.length===1) {
+    active[0].chips+=poker.pot;
+    poker.phase='showdown'; poker.winner=[active[0].socketId]; poker.winnerHand='Herkes fold yaptı!';
+    broadcastPoker(); setTimeout(pokerNextHand,4000); return;
+  }
+
+  if      (poker.phase==='preflop') { poker.phase='flop';  poker.community=[poker.deck.pop(),poker.deck.pop(),poker.deck.pop()]; pokerStartRound(); }
+  else if (poker.phase==='flop')    { poker.phase='turn';  poker.community.push(poker.deck.pop()); pokerStartRound(); }
+  else if (poker.phase==='turn')    { poker.phase='river'; poker.community.push(poker.deck.pop()); pokerStartRound(); }
+  else if (poker.phase==='river')   { pokerShowdown(); }
+}
+
+function pokerStartRound() {
+  const seats=poker.seats;
+  let idx=(poker.dealer+1)%seats.length;
+  for (let i=0;i<seats.length;i++) { if (!seats[idx].folded&&!seats[idx].allIn) break; idx=(idx+1)%seats.length; }
+  poker.turn=seats[idx].socketId;
+  poker.toAct=new Set(pokerActiveNonAllIn(poker).map(s=>s.socketId));
+  broadcastPoker();
+}
+
+function pokerShowdown() {
+  poker.phase='showdown';
+  const active=pokerActive(poker);
+  let bestH=null, winners=[];
+  for (const s of active) {
+    const h=poker.community.length>=3 ? bestHand(s.hand,poker.community) : evalFive(s.hand.slice(0,5));
+    s._handRank=h;
+    if (!bestH||cmpH(h,bestH)>0) { bestH=h; winners=[s]; }
+    else if (cmpH(h,bestH)===0) winners.push(s);
+  }
+  const share=Math.floor(poker.pot/winners.length);
+  for (const w of winners) w.chips+=share;
+  poker.winner=winners.map(w=>w.socketId);
+  poker.winnerHand=HAND_NAMES[bestH?.[0]??0] || 'High Card';
+  broadcastPoker();
+  setTimeout(pokerNextHand,5000);
+}
+
+function pokerNextHand() {
+  if (!poker) return;
+  poker.seats=poker.seats.filter(s=>s.chips>0);
+  if (poker.seats.length<2) {
+    poker.phase='waiting';
+    for (const s of poker.seats) { s.hand=[]; s.bet=0; s.folded=false; s.allIn=false; }
+    broadcastPoker(); return;
+  }
+  poker.dealer=(poker.dealer+1)%poker.seats.length;
+  pokerDeal();
+}
+
+function pokerDeal() {
+  const p=poker;
+  p.deck=shuffle(createDeck()); p.community=[]; p.pot=0;
+  p.phase='preflop'; p.winner=null; p.winnerHand=null;
+  p.currentBet=BIG_BLIND; p.minRaise=BIG_BLIND;
+  for (const s of p.seats) { s.hand=[p.deck.pop(),p.deck.pop()]; s.bet=0; s.folded=false; s.allIn=false; }
+  const n=p.seats.length;
+  const sbIdx=(p.dealer+1)%n, bbIdx=(p.dealer+2)%n;
+  const sb=p.seats[sbIdx], bb=p.seats[bbIdx];
+  const sbAmt=Math.min(SMALL_BLIND,sb.chips), bbAmt=Math.min(BIG_BLIND,bb.chips);
+  sb.chips-=sbAmt; sb.bet=sbAmt; p.pot+=sbAmt;
+  bb.chips-=bbAmt; bb.bet=bbAmt; p.pot+=bbAmt;
+  if (sb.chips===0) sb.allIn=true;
+  if (bb.chips===0) bb.allIn=true;
+  p.turn=p.seats[(bbIdx+1)%n].socketId;
+  p.toAct=new Set(pokerActiveNonAllIn(p).map(s=>s.socketId));
+  broadcastPoker();
+}
+
 // ─── Socket.io ───────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   const ip = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
@@ -232,7 +410,13 @@ io.on('connection', (socket) => {
       return socket.emit('auth_error', { message: 'Yanlış şifre.' });
     }
     if (isUsernameTaken(username)) {
-      return socket.emit('auth_error', { message: `"${username}" kullanıcı adı zaten alınmış.` });
+      // Eski socket hâlâ aktif mi kontrol et; değilse temizle (race condition)
+      const oldId = getSocketIdByUsername(username);
+      if (oldId && io.sockets.sockets.get(oldId)) {
+        return socket.emit('auth_error', { message: `"${username}" kullanıcı adı zaten alınmış.` });
+      }
+      // Eski socket ölmüş ama connectedUsers'tan silinmemiş — temizle
+      if (oldId) connectedUsers.delete(oldId);
     }
     if (!db.getChannelById(channelId)) {
       return socket.emit('auth_error', { message: 'Kanal bulunamadı.' });
@@ -538,6 +722,89 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ── Poker ──────────────────────────────────────────────────────────────────
+  socket.on('poker_join', () => {
+    const user=connectedUsers.get(socket.id);
+    if (!user) return;
+    if (!poker) poker={seats:[],deck:[],community:[],pot:0,phase:'waiting',turn:null,dealer:0,currentBet:0,minRaise:BIG_BLIND,toAct:new Set(),winner:null,winnerHand:null};
+    if (poker.seats.find(s=>s.socketId===socket.id)) return;
+    if (poker.seats.length>=MAX_POKER_SEATS) return socket.emit('poker_error','Masa dolu (max 6 oyuncu)');
+    if (poker.phase!=='waiting') return socket.emit('poker_error','El devam ediyor, bir sonraki ele bekleyin');
+    poker.seats.push({socketId:socket.id,username:user.username,chips:START_CHIPS,hand:[],bet:0,folded:false,allIn:false});
+    socket.join('poker');
+    broadcastPoker();
+  });
+
+  socket.on('poker_leave', () => {
+    if (!poker) return;
+    poker.seats=poker.seats.filter(s=>s.socketId!==socket.id);
+    socket.leave('poker');
+    if (poker.seats.length===0) { poker=null; io.emit('poker_state',null); return; }
+    broadcastPoker();
+  });
+
+  socket.on('poker_start', () => {
+    if (!poker||poker.phase!=='waiting') return;
+    if (poker.seats.length<2) return socket.emit('poker_error','En az 2 oyuncu gerekli');
+    pokerDeal();
+  });
+
+  socket.on('poker_request_state', () => {
+    if (!poker) { socket.emit('poker_state', null); return; }
+    // Send private state to this socket
+    const mySeat = poker.seats.find(s=>s.socketId===socket.id);
+    const state = {
+      seats: poker.seats.map((s,i)=>({
+        socketId:s.socketId, username:s.username, chips:s.chips,
+        bet:s.bet, folded:s.folded, allIn:s.allIn,
+        hand: (s.socketId===socket.id||poker.phase==='showdown') ? s.hand : s.hand.map(()=>null),
+      })),
+      community: poker.community, pot: poker.pot, phase: poker.phase,
+      turn: poker.turn, currentBet: poker.currentBet, minRaise: poker.minRaise,
+      dealer: poker.dealer, toAct: [...poker.toAct],
+      winner: poker.winner||null, winnerHand: poker.winnerHand||null,
+    };
+    socket.emit('poker_state', state);
+  });
+
+  socket.on('poker_action', ({ action, amount }) => {
+    if (!poker||poker.phase==='waiting'||poker.phase==='showdown') return;
+    if (poker.turn!==socket.id) return;
+    if (!poker.toAct.has(socket.id)) return;
+    const seat=poker.seats.find(s=>s.socketId===socket.id);
+    if (!seat) return;
+    poker.toAct.delete(socket.id);
+
+    if (action==='fold') {
+      seat.folded=true;
+      const active=pokerActive(poker);
+      if (active.length===1) {
+        active[0].chips+=poker.pot;
+        poker.phase='showdown'; poker.winner=[active[0].socketId]; poker.winnerHand='Herkes fold yaptı!';
+        broadcastPoker(); setTimeout(pokerNextHand,4000); return;
+      }
+      if (poker.toAct.size===0) pokerEndRound(); else pokerNextTurn();
+    } else if (action==='check') {
+      if (seat.bet!==poker.currentBet) { poker.toAct.add(socket.id); return socket.emit('poker_error','Check yapamazsın'); }
+      if (poker.toAct.size===0) pokerEndRound(); else pokerNextTurn();
+    } else if (action==='call') {
+      const callAmt=Math.min(poker.currentBet-seat.bet,seat.chips);
+      seat.chips-=callAmt; seat.bet+=callAmt; poker.pot+=callAmt;
+      if (seat.chips===0) seat.allIn=true;
+      if (poker.toAct.size===0) pokerEndRound(); else pokerNextTurn();
+    } else if (action==='raise') {
+      const total=Math.max(amount||0,poker.currentBet+poker.minRaise);
+      const raiseAmt=Math.min(total-seat.bet,seat.chips);
+      seat.chips-=raiseAmt; seat.bet+=raiseAmt; poker.pot+=raiseAmt;
+      if (seat.chips===0) seat.allIn=true;
+      poker.minRaise=Math.max(BIG_BLIND,seat.bet-poker.currentBet);
+      poker.currentBet=Math.max(poker.currentBet,seat.bet);
+      poker.toAct=new Set(pokerActiveNonAllIn(poker).map(s=>s.socketId));
+      poker.toAct.delete(socket.id);
+      if (poker.toAct.size===0) pokerEndRound(); else { poker.turn=socket.id; pokerNextTurn(); }
+    }
+  });
+
   // ── Bağlantı kesildi ───────────────────────────────────────────────────────
   socket.on('disconnect', () => {
     const user = connectedUsers.get(socket.id);
@@ -557,6 +824,26 @@ io.on('connection', (socket) => {
       });
       broadcastUserList(channelId);
       io.emit('global_user_list', { users: getAllOnlineUsers() });
+
+      // Poker: kendi koltuktan çıkar
+      if (poker) {
+        const seat=poker.seats.find(s=>s.socketId===socket.id);
+        if (seat) {
+          if (poker.phase!=='waiting'&&poker.turn===socket.id) {
+            seat.folded=true; poker.toAct.delete(socket.id);
+            const active=pokerActive(poker);
+            if (active.length===1) {
+              active[0].chips+=poker.pot;
+              poker.phase='showdown'; poker.winner=[active[0].socketId]; poker.winnerHand='Oyuncu ayrıldı';
+              broadcastPoker(); setTimeout(pokerNextHand,4000);
+            } else if (poker.toAct.size===0) pokerEndRound(); else pokerNextTurn();
+          } else {
+            poker.seats=poker.seats.filter(s=>s.socketId!==socket.id);
+            if (poker.seats.length===0) poker=null;
+            else broadcastPoker();
+          }
+        }
+      }
     }
   });
 });
