@@ -1199,3 +1199,22 @@ li.active .ch-hash { color: var(--text-2); }
   background: var(--bg-tertiary); border-radius: 6px; padding: 6px 10px;
   white-space: pre; margin: 0;
 }
+
+/* Poker el sıralaması referansı */
+#poker-hands-ref {
+  background: var(--bg-primary); border-radius: 8px;
+  border: 1px solid var(--border);
+}
+#poker-hands-ref summary {
+  padding: 8px 12px; cursor: pointer; font-size: .82rem;
+  color: var(--text-2); user-select: none;
+}
+#poker-hands-ref summary:hover { color: var(--text-1); }
+.poker-hand-list {
+  margin: 0; padding: 8px 12px 10px 28px; display: flex;
+  flex-direction: column; gap: 3px;
+}
+.poker-hand-list li { font-size: .78rem; color: var(--text-2); }
+.poker-hand-list li strong { color: var(--text-1); min-width: 130px; display: inline-block; }
+.poker-hand-list li:first-child strong { color: #f0c040; }
+.poker-hand-list li:nth-child(2) strong { color: #c8a0f0; }
