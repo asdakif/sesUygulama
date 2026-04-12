@@ -1402,11 +1402,10 @@ loginForm.addEventListener('submit', async (e) => {
 
   socket = io();
   setupSocket();
-  socket.emit('join', { ...savedCreds, channelId: currentChannelId });
 
-  // Otomatik yeniden bağlanma
+  // İlk bağlantı + otomatik yeniden bağlanma — connect her ikisini de kapsar
   socket.on('connect', () => {
-    if (!currentUser) return; // henüz giriş yapılmamış
+    if (!currentUser) return;
     socket.emit('join', { ...savedCreds, channelId: currentChannelId });
     if (currentVoiceRoom) {
       setTimeout(() => socket.emit('voice_join', { room: currentVoiceRoom }), 500);
