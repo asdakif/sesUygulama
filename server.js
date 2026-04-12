@@ -343,6 +343,7 @@ function pokerStartRound() {
   poker.turn=seats[idx].socketId;
   poker.toAct=new Set(pokerActiveNonAllIn(poker).map(s=>s.socketId));
   broadcastPoker();
+  if (poker.toAct.size===0) setTimeout(pokerEndRound, 1200);
 }
 
 function pokerShowdown() {
@@ -392,6 +393,7 @@ function pokerDeal() {
   p.turn=p.seats[(bbIdx+1)%n].socketId;
   p.toAct=new Set(pokerActiveNonAllIn(p).map(s=>s.socketId));
   broadcastPoker();
+  if (p.toAct.size===0) setTimeout(pokerEndRound, 1200);
 }
 
 // ─── Socket.io ───────────────────────────────────────────────────────────────
