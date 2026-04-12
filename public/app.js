@@ -1631,38 +1631,80 @@ function renderPoker(state) {
   pokerSeats.innerHTML = '';
   for (const s of state.seats) {
     if (s.socketId === socket?.id) continue; // own area rendered separately
+    const isWinner = s.isWinner && state.phase === 'showdown';
     const div = document.createElement('div');
-    div.className = 'poker-seat' + (s.folded?' folded':'') + (state.turn===s.socketId?' myturn':'');
+    div.className = 'poker-seat'
+      + (s.folded ? ' folded' : '')
+      + (state.turn === s.socketId ? ' myturn' : '')
+      + (isWinner ? ' winner' : '');
     const dealer = state.seats[state.dealer]?.socketId === s.socketId;
-    div.innerHTML = `
-      <div class="ps-name">${s.username}${dealer?' <span class="dealer-btn">D</span>':''}</div>
-      <div class="ps-chips">💰 ${s.chips} ${s.allIn?'<em>ALL-IN</em>':''}</div>
-      ${s.bet>0?`<div class="ps-bet">Bet: ${s.bet}</div>`:''}
-      <div class="ps-cards">${(s.hand||[]).map(c=>cardEl(c).outerHTML).join('')}</div>
-    `;
-    // Rebuild cardEls properly (outerHTML trick)
-    const cardsDiv = div.querySelector('.ps-cards');
-    cardsDiv.innerHTML = '';
-    (s.hand||[null,null]).forEach(c => cardsDiv.append(cardEl(c)));
+    const nameEl = document.createElement('div');
+    nameEl.className = 'ps-name';
+    nameEl.innerHTML = (isWinner ? '🏆 ' : '') + s.username
+      + (dealer ? ' <span class="dealer-btn">D</span>' : '');
+
+    const chipsEl = document.createElement('div');
+    chipsEl.className = 'ps-chips';
+    chipsEl.textContent = `💰 ${s.chips}` + (s.allIn ? ' ALL-IN' : '');
+
+    div.append(nameEl, chipsEl);
+
+    if (s.bet > 0) {
+      const betEl = document.createElement('div');
+      betEl.className = 'ps-bet';
+      betEl.textContent = `Bet: ${s.bet}`;
+      div.append(betEl);
+    }
+
+    const cardsDiv = document.createElement('div');
+    cardsDiv.className = 'ps-cards';
+    (s.hand || [null, null]).forEach(c => cardsDiv.append(cardEl(c)));
+    div.append(cardsDiv);
+
+    // Showdown: el ismi göster
+    if (state.phase === 'showdown' && !s.folded && s.handName) {
+      const handEl = document.createElement('div');
+      handEl.className = 'ps-hand-name' + (isWinner ? ' winner-hand' : '');
+      handEl.textContent = s.handName;
+      div.append(handEl);
+    }
+
     pokerSeats.append(div);
   }
 
   // My area
   if (mySeat) {
     pokerMyArea.classList.remove('hidden');
+    pokerMyArea.classList.toggle('winner', !!(mySeat.isWinner && state.phase === 'showdown'));
     pokerHoleCards.innerHTML = '';
     (mySeat.hand||[]).forEach(c => pokerHoleCards.append(cardEl(c)));
     pokerMyChips.textContent = `💰 ${mySeat.chips} chip`;
-    pokerMyBet.textContent   = mySeat.bet > 0 ? `Bet: ${mySeat.bet}` : '';
+    // Showdown: kendi el ismini göster
+    if (state.phase === 'showdown' && mySeat.handName) {
+      pokerMyBet.textContent = mySeat.isWinner ? `🏆 ${mySeat.handName}` : mySeat.handName;
+      pokerMyBet.style.color = mySeat.isWinner ? 'var(--green)' : 'var(--text-2)';
+      pokerMyBet.style.fontWeight = '600';
+    } else {
+      pokerMyBet.textContent = mySeat.bet > 0 ? `Bet: ${mySeat.bet}` : '';
+      pokerMyBet.style.color = '';
+      pokerMyBet.style.fontWeight = '';
+    }
   } else {
     pokerMyArea.classList.add('hidden');
   }
 
-  // Winner banner
+  // Winner banner — tüm elleri karşılaştırmalı göster
   if (state.phase === 'showdown' && state.winner) {
     pokerWinnerBanner.classList.remove('hidden');
-    const names = state.winner.map(id => state.seats.find(s=>s.socketId===id)?.username || id);
-    pokerWinnerBanner.textContent = `🏆 ${names.join(' & ')} kazandı! (${state.winnerHand})`;
+    const winnerNames = state.winner.map(id => state.seats.find(s=>s.socketId===id)?.username || id);
+    // El karşılaştırması: her aktif oyuncunun elini listele
+    const handLines = state.seats
+      .filter(s => !s.folded && s.handName)
+      .map(s => `${s.isWinner ? '🏆' : '  '} ${s.username}: ${s.handName}`)
+      .join('\n');
+    pokerWinnerBanner.innerHTML =
+      `<div class="pw-title">${winnerNames.join(' & ')} kazandı!</div>` +
+      (handLines ? `<pre class="pw-hands">${handLines}</pre>` : '');
   } else {
     pokerWinnerBanner.classList.add('hidden');
   }

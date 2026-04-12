@@ -1179,3 +1179,23 @@ li.active .ch-hash { color: var(--text-2); }
   font-size: .82rem; color: var(--text-2);
 }
 #poker-lobby-btns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+/* Poker showdown */
+.poker-seat.winner {
+  border-color: var(--green);
+  background: rgba(35,165,90,.12);
+}
+.ps-hand-name {
+  margin-top: 5px; font-size: .72rem; color: var(--text-2);
+  text-align: center; font-style: italic;
+}
+.ps-hand-name.winner-hand {
+  color: var(--green); font-weight: 700; font-style: normal;
+}
+#poker-my-area.winner { border-color: var(--green); background: rgba(35,165,90,.1); }
+.pw-title { font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
+.pw-hands {
+  font-family: monospace; font-size: .82rem; color: var(--text-2);
+  background: var(--bg-tertiary); border-radius: 6px; padding: 6px 10px;
+  white-space: pre; margin: 0;
+}

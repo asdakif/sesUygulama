@@ -282,6 +282,9 @@ function broadcastPoker() {
     seats: poker.seats.map(s=>({
       socketId:s.socketId, username:s.username,
       chips:s.chips, bet:s.bet, folded:s.folded, allIn:s.allIn, hand:null,
+      handName: (poker.phase==='showdown' && !s.folded && s._handRank!=null)
+        ? HAND_NAMES[s._handRank[0]] : null,
+      isWinner: poker.winner ? poker.winner.includes(s.socketId) : false,
     })),
     community: poker.community,
     pot:        poker.pot,
@@ -758,6 +761,9 @@ io.on('connection', (socket) => {
         socketId:s.socketId, username:s.username, chips:s.chips,
         bet:s.bet, folded:s.folded, allIn:s.allIn,
         hand: (s.socketId===socket.id||poker.phase==='showdown') ? s.hand : s.hand.map(()=>null),
+        handName: (poker.phase==='showdown' && !s.folded && s._handRank!=null)
+          ? HAND_NAMES[s._handRank[0]] : null,
+        isWinner: poker.winner ? poker.winner.includes(s.socketId) : false,
       })),
       community: poker.community, pot: poker.pot, phase: poker.phase,
       turn: poker.turn, currentBet: poker.currentBet, minRaise: poker.minRaise,
