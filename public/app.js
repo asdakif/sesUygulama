@@ -757,10 +757,7 @@ screenShareBtn.addEventListener('click', startScreenShare);
 
 // ═══════════════ SESLİ KANAL (WebRTC) ═══════════════
 async function joinVoiceChannel(room) {
-  if (currentVoiceRoom === room) {
-    await leaveVoiceChannel();
-    return;
-  }
+  if (currentVoiceRoom === room) return;
   if (currentVoiceRoom) await leaveVoiceChannel();
 
   try {
@@ -973,31 +970,31 @@ function updateMuteBtn() {
 
 function toggleMute() {
   isMuted = !isMuted;
-  if (localStream) localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
-  socket.emit('voice_mute_state', { muted: isMuted });
+  applyMicState();
   isMuted ? sounds.mute() : sounds.unmute();
   updateMuteBtn();
 }
 
 // ── Ses modu (PTT / VAD) ──────────────────────────────────────────────────────
 let pttActive  = false;
-let voiceMode  = localStorage.getItem('voiceMode') || 'ptt'; // 'ptt' | 'vad'
+let voiceMode  = localStorage.getItem('voiceMode') || 'vad'; // 'ptt' | 'vad'
+
+// Mikrofon gerçek durumu: VAD'da isMuted'a bak, PTT'de pttActive && !isMuted
+function applyMicState() {
+  if (!localStream) return;
+  const active = voiceMode === 'ptt' ? (pttActive && !isMuted) : !isMuted;
+  localStream.getAudioTracks().forEach(t => { t.enabled = active; });
+  socket?.emit('voice_mute_state', { muted: !active });
+}
 
 function applyVoiceMode() {
   if (!currentVoiceRoom || !localStream) return;
   if (voiceMode === 'vad') {
-    // Ses etkinliği: mikrofon her zaman açık
-    isMuted = false;
-    localStream.getAudioTracks().forEach(t => { t.enabled = true; });
-    socket.emit('voice_mute_state', { muted: false });
     hidePttIndicator();
   } else {
-    // PTT: başlangıçta kapalı
-    isMuted = true;
-    localStream.getAudioTracks().forEach(t => { t.enabled = false; });
-    socket.emit('voice_mute_state', { muted: true });
-    showPttIndicator(false);
+    showPttIndicator(pttActive);
   }
+  applyMicState();
   updateMuteBtn();
 }
 
@@ -1008,8 +1005,7 @@ document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (pttActive) return;
   pttActive = true;
-  if (localStream) localStream.getAudioTracks().forEach(t => { t.enabled = true; });
-  socket.emit('voice_mute_state', { muted: false });
+  applyMicState();
   showPttIndicator(true);
 });
 
@@ -1018,8 +1014,7 @@ document.addEventListener('keyup', (e) => {
   if (e.code !== 'Space') return;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   pttActive = false;
-  if (localStream) localStream.getAudioTracks().forEach(t => { t.enabled = false; });
-  socket.emit('voice_mute_state', { muted: true });
+  applyMicState();
   showPttIndicator(false);
 });
 
