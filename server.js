@@ -9,7 +9,7 @@ const db        = require('./database');
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server);
-const PORT   = process.env.PORT || 3000;
+const DEFAULT_PORT = process.env.PORT === undefined ? 3000 : Number(process.env.PORT);
 
 // ─── Oda şifresi ─────────────────────────────────────────────────────────────
 function randomCode() {
@@ -190,6 +190,9 @@ function getSocketIdByUsername(username) {
 const voiceRooms = new Map();
 ['sesli-genel', 'sesli-oyun'].forEach(r => voiceRooms.set(r, new Map()));
 
+// channelId → { sharerId, username }
+const screenShares = new Map();
+
 function broadcastVoiceChannelList() {
   io.emit('voice_channels_list', [...voiceRooms.keys()]);
 }
@@ -211,6 +214,38 @@ function leaveAllVoiceRooms(socket) {
     }
   }
   broadcastVoiceRooms();
+}
+
+function getActiveScreenShare(channelId) {
+  const share = screenShares.get(channelId);
+  if (!share) return null;
+  if (!io.sockets.sockets.get(share.sharerId)) {
+    screenShares.delete(channelId);
+    return null;
+  }
+  return share;
+}
+
+function emitActiveScreenShareToSocket(socket, channelId) {
+  const share = getActiveScreenShare(channelId);
+  if (!share || share.sharerId === socket.id) return;
+  socket.emit('screen_share_available', share);
+}
+
+function findScreenShareChannelBySharer(sharerId) {
+  for (const [channelId, share] of screenShares) {
+    if (share.sharerId === sharerId) return channelId;
+  }
+  return null;
+}
+
+function endScreenShare(sharerId, channelId = findScreenShareChannelBySharer(sharerId)) {
+  if (channelId == null) return false;
+  const share = screenShares.get(channelId);
+  if (!share || share.sharerId !== sharerId) return false;
+  screenShares.delete(channelId);
+  io.to(getRoomName(channelId)).emit('screen_share_ended', { sharerId });
+  return true;
 }
 
 // ─── POKER ───────────────────────────────────────────────────────────────────
@@ -439,6 +474,7 @@ io.on('connection', (socket) => {
     socket.emit('voice_rooms_state', Object.fromEntries(
       [...voiceRooms].map(([n, m]) => [n, [...m.values()].map(u => u.username)])
     ));
+    emitActiveScreenShareToSocket(socket, channelId);
 
     broadcastUserList(channelId);
     io.emit('global_user_list', { users: getAllOnlineUsers() });
@@ -455,6 +491,7 @@ io.on('connection', (socket) => {
     if (!db.getChannelById(channelId)) return;
 
     const old = user.channelId;
+    endScreenShare(socket.id, old);
     socket.leave(getRoomName(old));
     socket.to(getRoomName(old)).emit('system_message', {
       text: `${user.username} kanaldan ayrıldı.`, channelId: old,
@@ -469,6 +506,7 @@ io.on('connection', (socket) => {
       messages: db.getMessages(channelId),
       channelId,
     });
+    emitActiveScreenShareToSocket(socket, channelId);
     broadcastUserList(channelId);
     socket.to(getRoomName(channelId)).emit('system_message', {
       text: `${user.username} katıldı.`, channelId,
@@ -623,12 +661,12 @@ io.on('connection', (socket) => {
   socket.on('screen_share_start', () => {
     const user = connectedUsers.get(socket.id);
     if (!user) return;
-    // Aynı kanalda başka biri paylaşıyorsa engelle
-    for (const [sid,] of connectedUsers) {
-      if (io.sockets.sockets.get(sid)?._screenSharing && sid !== socket.id) return;
-    }
-    const sock = io.sockets.sockets.get(socket.id);
-    if (sock) sock._screenSharing = true;
+    const activeShare = getActiveScreenShare(user.channelId);
+    if (activeShare && activeShare.sharerId !== socket.id) return;
+    screenShares.set(user.channelId, {
+      sharerId: socket.id,
+      username: user.username,
+    });
 
     // Kanaldaki herkese bildir, onlar viewer isteği gönderecek
     socket.to(getRoomName(user.channelId)).emit('screen_share_available', {
@@ -639,6 +677,10 @@ io.on('connection', (socket) => {
 
   // Viewer, paylaşımcıya bağlanmak için request gönderir
   socket.on('screen_view_request', ({ sharerId }) => {
+    const viewer = connectedUsers.get(socket.id);
+    if (!viewer) return;
+    const activeShare = getActiveScreenShare(viewer.channelId);
+    if (!activeShare || activeShare.sharerId !== sharerId) return;
     io.to(sharerId).emit('screen_viewer_joined', { viewerId: socket.id });
   });
 
@@ -650,9 +692,7 @@ io.on('connection', (socket) => {
   socket.on('screen_share_stop', () => {
     const user = connectedUsers.get(socket.id);
     if (!user) return;
-    const sock = io.sockets.sockets.get(socket.id);
-    if (sock) sock._screenSharing = false;
-    io.to(getRoomName(user.channelId)).emit('screen_share_ended', { sharerId: socket.id });
+    endScreenShare(socket.id, user.channelId);
   });
 
   // ── Müzik botu (sesli kanal bazlı) ─────────────────────────────────────────
@@ -818,13 +858,9 @@ io.on('connection', (socket) => {
     const user = connectedUsers.get(socket.id);
     if (user) {
       const { username, channelId } = user;
+      endScreenShare(socket.id, channelId);
       connectedUsers.delete(socket.id);
       leaveAllVoiceRooms(socket);
-      // Ekran paylaşımı varsa durdur
-      const sock = io.sockets.sockets.get(socket.id);
-      if (sock?._screenSharing) {
-        io.to(getRoomName(channelId)).emit('screen_share_ended', { sharerId: socket.id });
-      }
 
       socket.to(getRoomName(channelId)).emit('user_stop_typing', { username, channelId });
       socket.to(getRoomName(channelId)).emit('system_message', {
@@ -856,8 +892,65 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`\n✓ Sunucu çalışıyor → http://localhost:${PORT}`);
-  console.log(`🔑 Oda şifresi: ${ROOM_PASSWORD}`);
-  console.log(`   (Kendi şifren için: PASSWORD=şifren npm start)\n`);
-});
+let startPromise = null;
+
+function startServer({ port = DEFAULT_PORT, host = '0.0.0.0', silent = false } = {}) {
+  if (server.listening) return Promise.resolve(server.address());
+  if (startPromise) return startPromise;
+
+  startPromise = new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off('listening', onListening);
+      startPromise = null;
+      reject(err);
+    };
+
+    const onListening = () => {
+      server.off('error', onError);
+      const address = server.address();
+      if (!silent) {
+        const actualPort = typeof address === 'object' && address ? address.port : port;
+        const printableHost = host === '0.0.0.0' ? 'localhost' : host;
+        console.log(`\n✓ Sunucu çalışıyor → http://${printableHost}:${actualPort}`);
+        console.log(`🔑 Oda şifresi: ${ROOM_PASSWORD}`);
+        console.log('   (Kendi şifren için: PASSWORD=şifren npm run start:web)\n');
+      }
+      resolve(address);
+    };
+
+    server.once('error', onError);
+    server.listen(port, host, onListening);
+  });
+
+  return startPromise;
+}
+
+function stopServer() {
+  if (!server.listening) {
+    startPromise = null;
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    server.close((err) => {
+      startPromise = null;
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+if (require.main === module) {
+  startServer().catch((err) => {
+    console.error('Sunucu başlatılamadı:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  app,
+  io,
+  server,
+  startServer,
+  stopServer,
+};

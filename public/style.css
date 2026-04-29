@@ -400,6 +400,51 @@ li.active .ch-hash { color: var(--text-2); }
   cursor: pointer;
 }
 
+#screen-volume-wrap {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(18, 19, 22, .82);
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  color: var(--text-2);
+  backdrop-filter: blur(10px);
+}
+
+#screen-volume {
+  -webkit-appearance: none;
+  width: 96px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.18);
+  outline: none;
+  cursor: pointer;
+}
+
+#screen-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform .1s;
+}
+
+#screen-volume::-webkit-slider-thumb:hover { transform: scale(1.15); }
+
+#screen-volume-label {
+  min-width: 38px;
+  font-size: .74rem;
+  color: var(--text-1);
+  text-align: right;
+}
+
 /* ── Kalite seçim modalı ── */
 #quality-modal-overlay {
   position: fixed;

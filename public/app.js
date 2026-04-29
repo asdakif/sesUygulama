@@ -91,6 +91,8 @@ const screenVideo         = $('screen-video');
 const screenPanelTitle    = $('screen-panel-title');
 const screenPanelClose    = $('screen-panel-close');
 const screenFullscreenBtn = $('screen-fullscreen-btn');
+const screenVolume        = $('screen-volume');
+const screenVolumeLabel   = $('screen-volume-label');
 const qualityOverlay      = $('quality-modal-overlay');
 const voiceControls  = $('voice-controls');
 const vcMuteBtn      = $('vc-mute-btn');
@@ -265,6 +267,8 @@ function setActiveChannelInSidebar(channelId) {
 
 function switchToChannel(channelId) {
   if (channelId === currentChannelId && currentView === 'channel') return;
+  if (isSharing) stopScreenShare();
+  closeScreenView();
   currentView = 'channel';
   currentChannelId = channelId;
   currentDmPeer = null;
@@ -599,6 +603,22 @@ const QUALITY_PRESETS = {
 };
 let selectedQuality = 'normal';
 
+function applyScreenShareVolume(value) {
+  const vol = Math.max(0, Math.min(100, parseInt(value) || 0));
+  screenVolume.value = vol;
+  screenVolumeLabel.textContent = vol + '%';
+  screenVideo.volume = vol / 100;
+}
+
+const savedScreenVol = parseInt(localStorage.getItem('screenShareVolume') ?? '100');
+applyScreenShareVolume(savedScreenVol);
+
+screenVolume.addEventListener('input', () => {
+  const vol = parseInt(screenVolume.value);
+  applyScreenShareVolume(vol);
+  localStorage.setItem('screenShareVolume', vol);
+});
+
 // Kalite modalını göster, seçim sonrası paylaşımı başlat
 function startScreenShare() {
   if (isSharing) { stopScreenShare(); return; }
@@ -652,6 +672,13 @@ function stopScreenShare() {
   screenShareLabel.textContent = 'Ekranı Paylaş';
 }
 
+function closeScreenView() {
+  screenPanel.classList.remove('fullscreen-mode');
+  screenPanel.classList.add('hidden');
+  screenVideo.srcObject = null;
+  if (screenViewConn) { screenViewConn.close(); screenViewConn = null; }
+}
+
 async function createScreenPeerForViewer(viewerId) {
   const pc = new RTCPeerConnection(ICE);
   screenPeerConns.set(viewerId, pc);
@@ -687,6 +714,7 @@ async function createScreenViewConn(sharerId) {
 
   pc.ontrack = (ev) => {
     screenVideo.srcObject = ev.streams[0];
+    applyScreenShareVolume(screenVolume.value);
     screenPanel.classList.remove('hidden');
   };
 
@@ -696,8 +724,7 @@ async function createScreenViewConn(sharerId) {
 
   pc.onconnectionstatechange = () => {
     if (['disconnected','failed','closed'].includes(pc.connectionState)) {
-      screenPanel.classList.add('hidden');
-      screenVideo.srcObject = null;
+      closeScreenView();
     }
   };
 
@@ -731,10 +758,7 @@ async function createScreenViewConn(sharerId) {
 })();
 
 screenPanelClose.addEventListener('click', () => {
-  screenPanel.classList.remove('fullscreen-mode');
-  screenPanel.classList.add('hidden');
-  screenVideo.srcObject = null;
-  if (screenViewConn) { screenViewConn.close(); screenViewConn = null; }
+  closeScreenView();
 });
 
 // Tam ekran
@@ -1445,9 +1469,7 @@ function setupSocket() {
   });
 
   socket.on('screen_share_ended', () => {
-    screenPanel.classList.add('hidden');
-    screenVideo.srcObject = null;
-    if (screenViewConn) { screenViewConn.close(); screenViewConn = null; }
+    closeScreenView();
   });
 
   socket.on('disconnect', () => {
