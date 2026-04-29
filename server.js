@@ -913,7 +913,7 @@ function startServer({ port = DEFAULT_PORT, host = '0.0.0.0', silent = false } =
         const printableHost = host === '0.0.0.0' ? 'localhost' : host;
         console.log(`\n✓ Sunucu çalışıyor → http://${printableHost}:${actualPort}`);
         console.log(`🔑 Oda şifresi: ${ROOM_PASSWORD}`);
-        console.log('   (Kendi şifren için: PASSWORD=şifren npm run start:web)\n');
+        console.log('   (Masaüstü uygulama için: npm run desktop)\n');
       }
       resolve(address);
     };
