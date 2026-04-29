@@ -36,6 +36,8 @@ const voicePeerIds    = new Map(); // socketId → username
 const locallyMuted    = new Set(); // username → kendi tarafından susturulmuş
 const peerVolumes     = {};        // username → 0-1
 const audioAnalysers  = new Map(); // socketId|'local' → AnalyserNode
+const pendingVoiceCandidates = new Map(); // socketId → RTCIceCandidateInit[]
+const peerDisconnectTimers   = new Map(); // socketId → timeoutId
 let   speakingTimer   = null;
 const SPEAKING_THR    = 12;        // 0-255 eşik
 
@@ -812,9 +814,72 @@ async function leaveVoiceChannel() {
 }
 
 function closeAllPeers() {
-  for (const [id, pc] of peerConnections) { pc.close(); removeAudio(id); }
-  peerConnections.clear();
+  for (const [id, pc] of [...peerConnections]) cleanupPeer(id, pc);
   mutedPeers.clear();
+}
+
+function shouldInitiateVoicePeer(peerId) {
+  return Boolean(socket?.id) && socket.id < peerId;
+}
+
+function queueVoiceCandidate(peerId, candidate) {
+  if (!pendingVoiceCandidates.has(peerId)) pendingVoiceCandidates.set(peerId, []);
+  pendingVoiceCandidates.get(peerId).push(candidate);
+}
+
+async function flushPendingVoiceCandidates(peerId) {
+  const pc = peerConnections.get(peerId);
+  const candidates = pendingVoiceCandidates.get(peerId);
+  if (!pc || !pc.remoteDescription || !candidates?.length) return;
+
+  pendingVoiceCandidates.delete(peerId);
+  for (const candidate of candidates) {
+    try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+  }
+}
+
+function clearPeerDisconnectTimer(peerId) {
+  const timer = peerDisconnectTimers.get(peerId);
+  if (!timer) return;
+  clearTimeout(timer);
+  peerDisconnectTimers.delete(peerId);
+}
+
+function cleanupPeer(peerId, pc = peerConnections.get(peerId)) {
+  clearPeerDisconnectTimer(peerId);
+  pendingVoiceCandidates.delete(peerId);
+  if (pc && peerConnections.get(peerId) === pc) peerConnections.delete(peerId);
+  if (pc && pc.signalingState !== 'closed') {
+    try { pc.close(); } catch {}
+  }
+  removeAudio(peerId);
+}
+
+function forgetVoicePeer(peerId) {
+  clearPeerDisconnectTimer(peerId);
+  pendingVoiceCandidates.delete(peerId);
+  voicePeerIds.delete(peerId);
+}
+
+function schedulePeerDisconnectCleanup(peerId, pc) {
+  clearPeerDisconnectTimer(peerId);
+  const timer = setTimeout(() => {
+    const activePc = peerConnections.get(peerId);
+    if (!activePc || activePc !== pc) return;
+    if (
+      ['disconnected', 'failed', 'closed'].includes(activePc.connectionState) ||
+      ['disconnected', 'failed', 'closed'].includes(activePc.iceConnectionState)
+    ) {
+      cleanupPeer(peerId, activePc);
+    }
+  }, 5000);
+  peerDisconnectTimers.set(peerId, timer);
+}
+
+async function ensureVoicePeerConnection(peerId, username) {
+  if (!peerId || peerId === socket?.id) return null;
+  if (username) voicePeerIds.set(peerId, username);
+  return createPeer(peerId, shouldInitiateVoicePeer(peerId));
 }
 
 async function createPeer(peerId, initiator) {
@@ -831,9 +896,11 @@ async function createPeer(peerId, initiator) {
       audio = document.createElement('audio');
       audio.id = `audio-${peerId}`;
       audio.autoplay = true;
+      audio.playsInline = true;
       document.body.append(audio);
     }
     audio.srcObject = ev.streams[0];
+    audio.play?.().catch(() => {});
     const username = voicePeerIds.get(peerId);
     if (username) {
       audio.volume   = peerVolumes[username] ?? 1;
@@ -855,11 +922,27 @@ async function createPeer(peerId, initiator) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (['disconnected','failed','closed'].includes(pc.connectionState)) {
-      pc.close();
-      peerConnections.delete(peerId);
-      removeAudio(peerId);
+    if (['connected', 'completed'].includes(pc.connectionState)) {
+      clearPeerDisconnectTimer(peerId);
+      return;
     }
+    if (['failed', 'closed'].includes(pc.connectionState)) {
+      cleanupPeer(peerId, pc);
+      return;
+    }
+    if (pc.connectionState === 'disconnected') schedulePeerDisconnectCleanup(peerId, pc);
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    if (['connected', 'completed'].includes(pc.iceConnectionState)) {
+      clearPeerDisconnectTimer(peerId);
+      return;
+    }
+    if (['failed', 'closed'].includes(pc.iceConnectionState)) {
+      cleanupPeer(peerId, pc);
+      return;
+    }
+    if (pc.iceConnectionState === 'disconnected') schedulePeerDisconnectCleanup(peerId, pc);
   };
 
   // Bağlantı kalitesi — 5sn'de bir RTT ölç
@@ -904,7 +987,6 @@ async function createPeer(peerId, initiator) {
 function removeAudio(peerId) {
   document.getElementById(`audio-${peerId}`)?.remove();
   audioAnalysers.delete(peerId);
-  voicePeerIds.delete(peerId);
 }
 
 function getLevel(analyser) {
@@ -1267,40 +1349,49 @@ function setupSocket() {
   socket.on('voice_rooms_state', (state) => updateVoiceRoomsUI(state));
 
   socket.on('voice_peers', async ({ peers }) => {
+    if (!currentVoiceRoom) return;
     for (const peer of peers) {
-      voicePeerIds.set(peer.socketId, peer.username);
-      await createPeer(peer.socketId, true);
+      await ensureVoicePeerConnection(peer.socketId, peer.username);
     }
   });
 
   socket.on('voice_peer_joined', async ({ socketId, username }) => {
-    if (username) voicePeerIds.set(socketId, username);
+    if (!currentVoiceRoom) return;
+    await ensureVoicePeerConnection(socketId, username);
   });
 
   socket.on('voice_offer', async ({ from, offer }) => {
+    if (!currentVoiceRoom) return;
     const pc = await createPeer(from, false);
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    await flushPendingVoiceCandidates(from);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     socket.emit('voice_answer', { to: from, answer });
   });
 
   socket.on('voice_answer', async ({ from, answer }) => {
-    const pc = peerConnections.get(from);
-    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(answer));
-  });
-
-  socket.on('voice_ice', async ({ from, candidate }) => {
+    if (!currentVoiceRoom) return;
     const pc = peerConnections.get(from);
     if (pc) {
-      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      await flushPendingVoiceCandidates(from);
     }
   });
 
+  socket.on('voice_ice', async ({ from, candidate }) => {
+    if (!currentVoiceRoom) return;
+    const pc = peerConnections.get(from);
+    if (!pc || !pc.remoteDescription) {
+      queueVoiceCandidate(from, candidate);
+      return;
+    }
+    try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+  });
+
   socket.on('voice_peer_left', ({ socketId }) => {
-    const pc = peerConnections.get(socketId);
-    if (pc) { pc.close(); peerConnections.delete(socketId); }
-    removeAudio(socketId);
+    cleanupPeer(socketId);
+    forgetVoicePeer(socketId);
   });
 
   socket.on('voice_peer_muted', ({ socketId, muted }) => {
