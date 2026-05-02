@@ -15,7 +15,11 @@ const DEFAULT_PORT = process.env.PORT === undefined ? 3000 : Number(process.env.
 function randomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
-const ROOM_PASSWORD = process.env.PASSWORD || 'akif31';
+const ROOM_PASSWORD = process.env.PASSWORD;
+if (!ROOM_PASSWORD) {
+  console.error('FATAL: PASSWORD environment variable is required.');
+  process.exit(1);
+}
 
 // ─── Güvenlik başlıkları ──────────────────────────────────────────────────────
 app.use(helmet({
@@ -74,7 +78,7 @@ async function fetchScClientId() {
     const api = h.find(x => x.hydratable === 'apiClient');
     if (api?.data?.id) {
       scClientId = api.data.id;
-      console.log(`[SC] client_id güncellendi: ${scClientId}`);
+      console.log('[SC] client_id güncellendi');
     }
   } catch (e) {
     console.error('[SC] client_id alınamadı:', e.message);

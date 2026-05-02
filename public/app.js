@@ -1482,6 +1482,7 @@ function setupSocket() {
   });
 
   socket.on('disconnect', () => {
+    $('connection-banner')?.classList.remove('hidden');
     leaveVoiceChannel();
     stopScreenShare();
   });
@@ -1522,6 +1523,7 @@ loginForm.addEventListener('submit', async (e) => {
 
   // İlk bağlantı + otomatik yeniden bağlanma — connect her ikisini de kapsar
   socket.on('connect', () => {
+    $('connection-banner')?.classList.add('hidden');
     if (!currentUser) return;
     socket.emit('join', { ...savedCreds, channelId: currentChannelId });
     if (currentVoiceRoom) {
