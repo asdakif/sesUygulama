@@ -57,6 +57,7 @@ function isRateLimited(ip) {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.get('/api/channels', (_req, res) => res.json(db.getChannels()));
 
 // ─── SoundCloud client_id (başlangıçta çek, 12 saatte bir yenile) ─────────────
