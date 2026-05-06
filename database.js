@@ -5,7 +5,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const DATA_FILE = path.join(__dirname, 'chat-data.json');
+const DATA_FILE = process.env.SESAPP_DATA_FILE || path.join(__dirname, 'chat-data.json');
 
 const defaultData = {
   channels: [
@@ -32,6 +32,7 @@ function load() {
 }
 
 function save(data) {
+  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
 }
 

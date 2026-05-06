@@ -7,8 +7,6 @@ const {
   shell,
 } = require('electron');
 
-const embeddedServer = require(path.join(__dirname, '..', 'server'));
-
 const isMac = process.platform === 'darwin';
 const DEFAULT_REMOTE_SERVER_URL = 'https://sesuygulama-production.up.railway.app';
 const configuredRemoteServerUrl = (
@@ -17,6 +15,7 @@ const configuredRemoteServerUrl = (
 
 let mainWindow = null;
 let localServerAddress = null;
+let embeddedServer = null;
 let quitting = false;
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -24,6 +23,14 @@ app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
 
 function isAllowedPermission(permission) {
   return ['media', 'display-capture', 'fullscreen'].includes(permission);
+}
+
+function getEmbeddedServer() {
+  if (!embeddedServer) {
+    process.env.SESAPP_DATA_FILE ||= path.join(app.getPath('userData'), 'chat-data.json');
+    embeddedServer = require(path.join(__dirname, '..', 'server'));
+  }
+  return embeddedServer;
 }
 
 async function configureMediaPermissions() {
@@ -66,7 +73,7 @@ async function configureMediaPermissions() {
 async function ensureAppUrl() {
   if (localServerAddress) return `http://127.0.0.1:${localServerAddress.port}`;
 
-  const address = await embeddedServer.startServer({
+  const address = await getEmbeddedServer().startServer({
     port: 0,
     host: '127.0.0.1',
     silent: true,
@@ -145,7 +152,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', (event) => {
-  if (quitting || !embeddedServer.server.listening) return;
+  if (quitting || !embeddedServer?.server.listening) return;
   quitting = true;
   event.preventDefault();
   embeddedServer.stopServer()
