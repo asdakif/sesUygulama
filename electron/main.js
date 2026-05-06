@@ -3,6 +3,7 @@ const {
   app,
   BrowserWindow,
   desktopCapturer,
+  ipcMain,
   session,
   shell,
 } = require('electron');
@@ -17,6 +18,7 @@ let mainWindow = null;
 let localServerAddress = null;
 let embeddedServer = null;
 let quitting = false;
+let currentPttKeyCode = 'Space';
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
@@ -117,6 +119,7 @@ async function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.js'),
       spellcheck: false,
     },
   });
@@ -130,6 +133,16 @@ async function createMainWindow() {
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (!currentPttKeyCode || input.code !== currentPttKeyCode) return;
+    if (!['keyDown', 'keyUp'].includes(input.type)) return;
+    mainWindow.webContents.send('ptt-key-event', {
+      type: input.type,
+      code: input.code,
+      isAutoRepeat: input.isAutoRepeat,
+    });
   });
 
   await loadApp(mainWindow);
@@ -149,6 +162,11 @@ async function bootstrap() {
 
 app.on('window-all-closed', () => {
   if (!isMac) app.quit();
+});
+
+ipcMain.on('ptt:set-key', (_event, code) => {
+  if (typeof code !== 'string' || !code.trim()) return;
+  currentPttKeyCode = code.trim();
 });
 
 app.on('before-quit', (event) => {

@@ -8,7 +8,13 @@
     "dev": "nodemon server.js",
     "desktop": "electron .",
     "desktop:dev": "electron .",
-    "build:win": "electron-builder --win nsis --x64"
+    "lint": "node scripts/lint.js",
+    "test": "node --test",
+    "smoke": "node scripts/smoke.js",
+    "check": "npm run lint && npm test && npm run smoke",
+    "build:win": "electron-builder --win nsis --x64",
+    "build:dir": "electron-builder --dir",
+    "build:mac": "electron-builder --mac"
   },
   "productName": "SesApp",
   "dependencies": {
@@ -31,6 +37,8 @@
     "files": [
       "electron/**/*",
       "public/**/*",
+      "server/**/*",
+      "scripts/**/*",
       "server.js",
       "database.js",
       "package.json"

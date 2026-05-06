@@ -1,27 +1,51 @@
 const express   = require('express');
 const http      = require('http');
 const { Server } = require('socket.io');
-const path      = require('path');
 const helmet    = require('helmet');
 const rateLimit = require('express-rate-limit');
 const db        = require('./database');
+const {
+  createAuthToken,
+  hashPassword,
+  validatePassword,
+  validateUsername,
+  verifyAuthToken,
+  verifyPassword,
+} = require('./server/auth');
+const {
+  createHttpAuthMiddleware,
+  createSocketAuthMiddleware,
+} = require('./server/auth-middleware');
+const config    = require('./server/config');
+const { createLogger } = require('./server/logger');
+const { createRealtimeState } = require('./server/realtime-state');
+const { createSoundCloudService } = require('./server/soundcloud');
 
-const app    = express();
+const log = createLogger('server');
+const socketLog = log.child('socket');
+const app = express();
 const server = http.createServer(app);
-const io     = new Server(server, {
-  pingInterval: 25000,
-  pingTimeout: 60000,
+const io = new Server(server, {
+  pingInterval: config.socketPingInterval,
+  pingTimeout: config.socketPingTimeout,
 });
-const DEFAULT_PORT = process.env.PORT === undefined ? 3000 : Number(process.env.PORT);
+const { requireAuth } = createHttpAuthMiddleware({
+  verifyAuthToken,
+  secret: config.authSecret,
+  db,
+});
+io.use(createSocketAuthMiddleware({
+  verifyAuthToken,
+  secret: config.authSecret,
+  db,
+}));
 
-// ─── Oda şifresi ─────────────────────────────────────────────────────────────
-function randomCode() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
-const ROOM_PASSWORD = process.env.PASSWORD;
-if (!ROOM_PASSWORD) {
-  console.error('FATAL: PASSWORD environment variable is required.');
+if (!config.authSecret) {
+  log.error('missing_auth_secret');
   process.exit(1);
+}
+if (!config.registrationInviteCode) {
+  log.warn('registration_invite_disabled');
 }
 
 // ─── Güvenlik başlıkları ──────────────────────────────────────────────────────
@@ -41,11 +65,12 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: false,
 }));
+app.use(express.json({ limit: '16kb' }));
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 dakika
-  max: 100,                  // IP başına 100 istek
+  windowMs: config.apiRateWindowMs,
+  max: config.apiRateMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Çok fazla istek. Lütfen bekleyin.' },
@@ -54,209 +79,138 @@ app.use('/api/', limiter);
 
 // Socket.io için bağlantı rate limiting
 const socketConnections = new Map(); // ip → timestamp[]
-const SOCKET_RATE_WINDOW_MS = 60_000;
-const SOCKET_RATE_MAX = Number(process.env.SOCKET_RATE_MAX || 30);
 function isRateLimited(ip) {
   const now = Date.now();
-  const times = (socketConnections.get(ip) || []).filter(t => now - t < SOCKET_RATE_WINDOW_MS);
+  const times = (socketConnections.get(ip) || []).filter(
+    (timestamp) => now - timestamp < config.socketRateWindowMs,
+  );
   times.push(now);
   socketConnections.set(ip, times);
-  return times.length > SOCKET_RATE_MAX;
+  return times.length > config.socketRateMax;
 }
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(config.staticDir));
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
-app.get('/api/channels', (_req, res) => res.json(db.getChannels()));
+app.get('/api/channels', requireAuth, (_req, res) => res.json(db.getChannels()));
+app.get('/api/client-config', (_req, res) => res.json({
+  iceServers: config.rtcIceServers,
+  registrationEnabled: Boolean(config.registrationInviteCode),
+}));
 
-// ─── SoundCloud client_id (başlangıçta çek, 12 saatte bir yenile) ─────────────
-const SC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-let scClientId = null;
-
-async function fetchScClientId() {
-  try {
-    const r    = await fetch('https://soundcloud.com', { headers: { 'User-Agent': SC_UA } });
-    const html = await r.text();
-    const m    = html.match(/window\.__sc_hydration\s*=\s*(\[[\s\S]*?\]);\s*<\/script>/);
-    if (!m) return;
-    const h   = JSON.parse(m[1]);
-    const api = h.find(x => x.hydratable === 'apiClient');
-    if (api?.data?.id) {
-      scClientId = api.data.id;
-      console.log('[SC] client_id güncellendi');
-    }
-  } catch (e) {
-    console.error('[SC] client_id alınamadı:', e.message);
-  }
+function sendApiError(res, status, message) {
+  res.status(status).json({ error: message });
 }
-fetchScClientId();
-setInterval(fetchScClientId, 12 * 60 * 60 * 1000);
 
-// ─── SoundCloud arama ────────────────────────────────────────────────────────
-app.get('/api/music/search', limiter, async (req, res) => {
-  const q = (req.query.q || '').trim().slice(0, 200);
-  if (!q) return res.json({ results: [] });
-  if (!scClientId) return res.json({ results: [], error: 'SC henüz hazır değil' });
-  try {
-    const r    = await fetch(
-      `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(q)}&limit=5&client_id=${scClientId}`,
-      { headers: { 'User-Agent': SC_UA } }
-    );
-    const data = await r.json();
-    const results = (data.collection || []).slice(0, 5).map(t => ({
-      trackUrl:  t.permalink_url,
-      title:     t.title,
-      thumbnail: (t.artwork_url || t.user?.avatar_url || '').replace('-large', '-t300x300'),
-      artist:    t.user?.username || '',
-    }));
-    res.json({ results });
-  } catch (e) {
-    console.error('SC search hatası:', e.message);
-    res.json({ results: [] });
+app.post('/api/auth/register', limiter, (req, res) => {
+  if (!config.registrationInviteCode) {
+    return sendApiError(res, 503, 'Yeni hesap kaydı şu anda kapalı.');
   }
+
+  const usernameCheck = validateUsername(req.body?.username);
+  if (!usernameCheck.ok) return sendApiError(res, 400, usernameCheck.message);
+
+  const passwordCheck = validatePassword(req.body?.password);
+  if (!passwordCheck.ok) return sendApiError(res, 400, passwordCheck.message);
+
+  if (req.body?.inviteCode !== config.registrationInviteCode) {
+    return sendApiError(res, 401, 'Davet kodu yanlış.');
+  }
+
+  const result = db.createAccount(usernameCheck.username, hashPassword(req.body.password));
+  if (!result.ok) {
+    return sendApiError(res, 409, `"${usernameCheck.username}" kullanıcı adı zaten kayıtlı.`);
+  }
+
+  const token = createAuthToken({
+    username: usernameCheck.username,
+    secret: config.authSecret,
+    ttlMs: config.authTokenTtlMs,
+  });
+  socketLog.info('account_registered', { username: usernameCheck.username });
+  res.status(201).json({
+    token,
+    user: { username: usernameCheck.username },
+  });
 });
 
-// ─── Müzik durumu ────────────────────────────────────────────────────────────
-// channelId → { current, queue, isPlaying, startedAt, elapsed }
-const musicState = new Map();
+app.post('/api/auth/login', limiter, (req, res) => {
+  const usernameCheck = validateUsername(req.body?.username);
+  if (!usernameCheck.ok) return sendApiError(res, 400, usernameCheck.message);
 
-function createMusicState() {
-  return { current: null, queue: [], isPlaying: false, startedAt: 0, elapsed: 0 };
-}
+  const passwordCheck = validatePassword(req.body?.password);
+  if (!passwordCheck.ok) return sendApiError(res, 400, passwordCheck.message);
 
-function advanceMusicQueue(voiceRoom) {
-  const state = musicState.get(voiceRoom) || createMusicState();
-  if (state.queue.length === 0) {
-    state.current   = null;
-    state.isPlaying = false;
-    state.elapsed   = 0;
-  } else {
-    state.current   = state.queue.shift();
-    state.isPlaying = true;
-    state.startedAt = Date.now();
-    state.elapsed   = 0;
+  const account = db.getAccount(usernameCheck.username);
+  if (!account || !verifyPassword(req.body.password, account.password_hash)) {
+    return sendApiError(res, 401, 'Kullanıcı adı veya şifre yanlış.');
   }
-  musicState.set(voiceRoom, state);
-  io.to(`voice:${voiceRoom}`).emit('music_state', getMusicPayload(voiceRoom));
-}
 
-function getMusicPayload(voiceRoom) {
-  const state = musicState.get(voiceRoom) || createMusicState();
-  const elapsed = state.isPlaying
-    ? (Date.now() - state.startedAt) / 1000
-    : state.elapsed;
-  return {
-    current:    state.current,
-    queue:      state.queue,
-    isPlaying:  state.isPlaying,
-    elapsed,
-    serverTime: Date.now(),
-  };
-}
-
-// ─── Metin kanalı durumu ─────────────────────────────────────────────────────
-// socketId → { username, channelId, sessionId }
-const connectedUsers = new Map();
-
-function getRoomName(channelId) { return `channel:${channelId}`; }
-
-function getUsersInChannel(channelId) {
-  const seen = new Set();
-  for (const [, u] of connectedUsers) {
-    if (u.channelId === channelId) seen.add(u.username);
-  }
-  return [...seen];
-}
-
-function broadcastUserList(channelId) {
-  io.to(getRoomName(channelId)).emit('user_list', {
-    users: getUsersInChannel(channelId),
+  db.touchAccountLogin(usernameCheck.username);
+  const token = createAuthToken({
+    username: usernameCheck.username,
+    secret: config.authSecret,
+    ttlMs: config.authTokenTtlMs,
   });
-}
+  socketLog.info('account_logged_in', { username: usernameCheck.username });
+  res.json({
+    token,
+    user: { username: usernameCheck.username },
+  });
+});
 
-// Tüm bağlı kullanıcıları listele (DM için)
-function getAllOnlineUsers() {
-  const seen = new Set();
-  for (const [, u] of connectedUsers) seen.add(u.username);
-  return [...seen];
-}
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({
+    user: { username: req.auth.username },
+  });
+});
 
-function isUsernameTaken(username) {
-  for (const [, u] of connectedUsers) {
-    if (u.username.toLowerCase() === username.toLowerCase()) return true;
-  }
-  return false;
-}
+app.post('/api/auth/logout', requireAuth, (req, res) => {
+  db.revokeToken(req.auth.tokenId, req.auth.expiresAt);
+  socketLog.info('account_logged_out', { username: req.auth.username, tokenId: req.auth.tokenId });
+  res.status(204).end();
+});
 
-function getSocketIdByUsername(username) {
-  for (const [id, u] of connectedUsers) {
-    if (u.username.toLowerCase() === username.toLowerCase()) return id;
-  }
-  return null;
-}
+const soundCloud = createSoundCloudService({
+  fetchImpl: fetch,
+  logger: log.child('soundcloud'),
+  refreshMs: config.soundcloudRefreshMs,
+  userAgent: config.soundcloudUserAgent,
+});
+log.info('rtc_config_loaded', {
+  iceServerCount: config.rtcIceServers.length,
+  custom: config.hasCustomRtcIceServers,
+});
 
-// ─── Sesli kanal durumu ──────────────────────────────────────────────────────
-// roomName → Map<socketId, { username }>
-const voiceRooms = new Map();
-['sesli-genel', 'sesli-oyun'].forEach(r => voiceRooms.set(r, new Map()));
+// ─── SoundCloud arama ────────────────────────────────────────────────────────
+app.get('/api/music/search', requireAuth, limiter, async (req, res) => {
+  const payload = await soundCloud.searchTracks(req.query.q);
+  res.json(payload);
+});
 
-// channelId → { sharerId, username }
-const screenShares = new Map();
-
-function broadcastVoiceChannelList() {
-  io.emit('voice_channels_list', [...voiceRooms.keys()]);
-}
-
-function broadcastVoiceRooms() {
-  const state = {};
-  for (const [name, members] of voiceRooms) {
-    state[name] = [...members.values()].map(u => u.username);
-  }
-  io.emit('voice_rooms_state', state);
-}
-
-function leaveAllVoiceRooms(socket) {
-  for (const [roomName, members] of voiceRooms) {
-    if (members.has(socket.id)) {
-      members.delete(socket.id);
-      socket.to(`voice:${roomName}`).emit('voice_peer_left', { socketId: socket.id });
-      socket.leave(`voice:${roomName}`);
-    }
-  }
-  broadcastVoiceRooms();
-}
-
-function getActiveScreenShare(channelId) {
-  const share = screenShares.get(channelId);
-  if (!share) return null;
-  if (!io.sockets.sockets.get(share.sharerId)) {
-    screenShares.delete(channelId);
-    return null;
-  }
-  return share;
-}
-
-function emitActiveScreenShareToSocket(socket, channelId) {
-  const share = getActiveScreenShare(channelId);
-  if (!share || share.sharerId === socket.id) return;
-  socket.emit('screen_share_available', share);
-}
-
-function findScreenShareChannelBySharer(sharerId) {
-  for (const [channelId, share] of screenShares) {
-    if (share.sharerId === sharerId) return channelId;
-  }
-  return null;
-}
-
-function endScreenShare(sharerId, channelId = findScreenShareChannelBySharer(sharerId)) {
-  if (channelId == null) return false;
-  const share = screenShares.get(channelId);
-  if (!share || share.sharerId !== sharerId) return false;
-  screenShares.delete(channelId);
-  io.to(getRoomName(channelId)).emit('screen_share_ended', { sharerId });
-  return true;
-}
+const realtime = createRealtimeState({
+  io,
+  defaultVoiceRooms: config.defaultVoiceRooms,
+});
+const {
+  connectedUsers,
+  voiceRooms,
+  musicState,
+  createMusicState,
+  getRoomName,
+  broadcastUserList,
+  getAllOnlineUsers,
+  isUsernameTaken,
+  getSocketIdByUsername,
+  broadcastVoiceChannelList,
+  broadcastVoiceRooms,
+  leaveAllVoiceRooms,
+  getActiveScreenShare,
+  emitActiveScreenShareToSocket,
+  endScreenShare,
+  getMusicPayload,
+  advanceMusicQueue,
+} = realtime;
 
 // ─── POKER ───────────────────────────────────────────────────────────────────
 const SMALL_BLIND      = 10;
@@ -445,21 +399,25 @@ function pokerDeal() {
 io.on('connection', (socket) => {
   const ip = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
   if (isRateLimited(ip)) {
+    socketLog.warn('connection_rate_limited', { socketId: socket.id, ip });
     socket.emit('auth_error', { message: 'Çok fazla bağlantı denemesi. Lütfen bekleyin.' });
     socket.disconnect(true);
     return;
   }
+  socketLog.info('connected', { socketId: socket.id, ip });
 
   // ── Giriş ──────────────────────────────────────────────────────────────────
-  socket.on('join', ({ username, password, channelId, sessionId }) => {
-    username = username?.trim();
+  socket.on('join', ({ channelId, sessionId }) => {
     sessionId = typeof sessionId === 'string' ? sessionId.trim().slice(0, 128) : '';
-    if (!username || username.length < 2 || username.length > 20) {
-      return socket.emit('auth_error', { message: 'Kullanıcı adı 2-20 karakter arasında olmalı.' });
+    const username = socket.data.auth?.username;
+    if (!username) {
+      socketLog.warn('join_missing_socket_auth', { socketId: socket.id, ip });
+      return socket.emit('auth_error', {
+        code: 'invalid_session',
+        message: 'Oturumun geçersiz. Tekrar giriş yap.',
+      });
     }
-    if (password !== ROOM_PASSWORD) {
-      return socket.emit('auth_error', { message: 'Yanlış şifre.' });
-    }
+
     if (isUsernameTaken(username)) {
       const oldId = getSocketIdByUsername(username);
       const oldSocket = oldId ? io.sockets.sockets.get(oldId) : null;
@@ -467,9 +425,14 @@ io.on('connection', (socket) => {
       const sameSessionReconnect = Boolean(sessionId && oldUser?.sessionId && oldUser.sessionId === sessionId);
 
       if (oldSocket && !sameSessionReconnect) {
-        return socket.emit('auth_error', { message: `"${username}" kullanıcı adı zaten alınmış.` });
+        socketLog.warn('join_username_taken', { socketId: socket.id, username, ip });
+        return socket.emit('auth_error', {
+          code: 'username_taken',
+          message: `"${username}" hesabı başka bir cihazda açık.`,
+        });
       }
       if (oldSocket && sameSessionReconnect) {
+        socketLog.info('join_replacing_stale_socket', { socketId: socket.id, username, oldSocketId: oldId });
         endScreenShare(oldId, oldUser?.channelId);
         leaveAllVoiceRooms(oldSocket);
         connectedUsers.delete(oldId);
@@ -479,12 +442,12 @@ io.on('connection', (socket) => {
       }
     }
     if (!db.getChannelById(channelId)) {
-      return socket.emit('auth_error', { message: 'Kanal bulunamadı.' });
+      return socket.emit('auth_error', { code: 'channel_missing', message: 'Kanal bulunamadı.' });
     }
 
-    db.ensureUser(username);
     connectedUsers.set(socket.id, { username, channelId, sessionId });
     socket.join(getRoomName(channelId));
+    socketLog.info('joined_channel', { socketId: socket.id, username, channelId });
 
     socket.emit('message_history', {
       messages: db.getMessages(channelId),
@@ -511,6 +474,7 @@ io.on('connection', (socket) => {
     if (!db.getChannelById(channelId)) return;
 
     const old = user.channelId;
+    socketLog.info('switched_channel', { socketId: socket.id, username: user.username, fromChannelId: old, toChannelId: channelId });
     endScreenShare(socket.id, old);
     socket.leave(getRoomName(old));
     socket.to(getRoomName(old)).emit('system_message', {
@@ -643,6 +607,7 @@ io.on('connection', (socket) => {
       socketId: socket.id, username: user.username,
     });
 
+    socketLog.info('voice_joined', { socketId: socket.id, username: user.username, room });
     broadcastVoiceRooms();
   });
 
@@ -693,6 +658,7 @@ io.on('connection', (socket) => {
       sharerId: socket.id,
       username: user.username,
     });
+    socketLog.info('screen_share_started', { socketId: socket.id, username: user.username, channelId: user.channelId });
   });
 
   // Viewer, paylaşımcıya bağlanmak için request gönderir
@@ -713,6 +679,7 @@ io.on('connection', (socket) => {
     const user = connectedUsers.get(socket.id);
     if (!user) return;
     endScreenShare(socket.id, user.channelId);
+    socketLog.info('screen_share_stopped', { socketId: socket.id, username: user.username, channelId: user.channelId });
   });
 
   // ── Müzik botu (sesli kanal bazlı) ─────────────────────────────────────────
@@ -878,6 +845,7 @@ io.on('connection', (socket) => {
     const user = connectedUsers.get(socket.id);
     if (user) {
       const { username, channelId } = user;
+      socketLog.info('disconnected', { socketId: socket.id, username, channelId });
       endScreenShare(socket.id, channelId);
       connectedUsers.delete(socket.id);
       leaveAllVoiceRooms(socket);
@@ -908,19 +876,23 @@ io.on('connection', (socket) => {
           }
         }
       }
+    } else {
+      socketLog.info('disconnected_unauthed', { socketId: socket.id });
     }
   });
 });
 
 let startPromise = null;
 
-function startServer({ port = DEFAULT_PORT, host = '0.0.0.0', silent = false } = {}) {
+function startServer({ port = config.defaultPort, host = '0.0.0.0', silent = false } = {}) {
   if (server.listening) return Promise.resolve(server.address());
   if (startPromise) return startPromise;
+  soundCloud.start();
 
   startPromise = new Promise((resolve, reject) => {
     const onError = (err) => {
       server.off('listening', onListening);
+      soundCloud.stop();
       startPromise = null;
       reject(err);
     };
@@ -931,9 +903,12 @@ function startServer({ port = DEFAULT_PORT, host = '0.0.0.0', silent = false } =
       if (!silent) {
         const actualPort = typeof address === 'object' && address ? address.port : port;
         const printableHost = host === '0.0.0.0' ? 'localhost' : host;
-        console.log(`\n✓ Sunucu çalışıyor → http://${printableHost}:${actualPort}`);
-        console.log(`🔑 Oda şifresi: ${ROOM_PASSWORD}`);
-        console.log('   (Masaüstü uygulama için: npm run desktop)\n');
+        log.info('started', {
+          host: printableHost,
+          port: actualPort,
+          mode: 'server',
+          desktopCommand: 'npm run desktop',
+        });
       }
       resolve(address);
     };
@@ -954,15 +929,19 @@ function stopServer() {
   return new Promise((resolve, reject) => {
     server.close((err) => {
       startPromise = null;
+      soundCloud.stop();
       if (err) reject(err);
-      else resolve();
+      else {
+        log.info('stopped');
+        resolve();
+      }
     });
   });
 }
 
 if (require.main === module) {
   startServer().catch((err) => {
-    console.error('Sunucu başlatılamadı:', err);
+    log.error('start_failed', { error: err });
     process.exit(1);
   });
 }

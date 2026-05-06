@@ -3,6 +3,7 @@
 // ═══════════════ DURUM ═══════════════
 let socket;
 let currentUser     = null;
+let currentAuthToken = null;
 let currentChannelId = null;
 let currentChannels  = [];
 let currentView      = 'channel'; // 'channel' | 'dm'
@@ -11,8 +12,12 @@ let typingTimer      = null;
 let isTyping         = false;
 let dmTypingTimer    = null;
 let isDmTyping       = false;
+let authMode         = 'login';
+let registrationEnabled = true;
 const typingUsers    = new Set();
 const dmNotifCounts  = {};        // username → unread count
+const AUTH_TOKEN_KEY = 'sesappAuthToken';
+const LAST_CHANNEL_ID_KEY = 'sesappLastChannelId';
 
 // Müzik
 let audioUnlocked   = false;
@@ -43,7 +48,7 @@ let reconnectScreenTimer     = null;
 let   speakingTimer   = null;
 const SPEAKING_THR    = 12;        // 0-255 eşik
 
-const ICE = { iceServers: [
+const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   {
@@ -55,15 +60,23 @@ const ICE = { iceServers: [
     username: 'openrelayproject',
     credential: 'openrelayproject',
   },
-]};
+];
+const ICE = { iceServers: DEFAULT_ICE_SERVERS.map(cloneIceServer) };
+let clientConfigPromise = null;
 
 // ═══════════════ DOM ═══════════════
 const $ = id => document.getElementById(id);
 
 const loginScreen    = $('login-screen');
 const loginForm      = $('login-form');
+const authSubtitle   = $('auth-subtitle');
+const authLoginTab   = $('auth-login-tab');
+const authRegisterTab= $('auth-register-tab');
 const usernameInput  = $('username-input');
 const passwordInput  = $('password-input');
+const inviteCodeField = $('invite-code-field');
+const inviteCodeInput = $('invite-code-input');
+const authHelperText = $('auth-helper-text');
 const loginError     = $('login-error');
 const appEl          = $('app');
 const connectionBanner = $('connection-banner');
@@ -80,6 +93,7 @@ const selfAvatar     = $('self-avatar');
 const selfUsername   = $('self-username');
 const micBtn          = $('mic-btn');
 const vcLeaveBtn      = null;
+const logoutBtn      = $('logout-btn');
 const musicPanel      = $('music-panel');
 const musicTitle      = $('music-title');
 const musicAddedBy    = $('music-added-by');
@@ -109,7 +123,17 @@ const qualityOverlay      = $('quality-modal-overlay');
 const voiceControls  = $('voice-controls');
 const vcMuteBtn      = $('vc-mute-btn');
 const emojiPicker    = $('emoji-picker');
+const settingsOverlay = $('settings-overlay');
+const inputDeviceSelect = $('input-device-select');
+const outputDeviceSelect = $('output-device-select');
+const audioDeviceNote = $('audio-device-note');
+const pttKeyBtn = $('ptt-key-btn');
+const pttKeyDesc = $('ptt-key-desc');
+const pttKeyNote = $('ptt-key-note');
 const defaultConnectionBannerText = connectionBanner?.textContent || 'Bağlantı kesildi — yeniden bağlanılıyor...';
+const isElectronApp = navigator.userAgent.toLowerCase().includes('electron');
+const electronAPI = globalThis.electronAPI || null;
+const voiceSettings = globalThis.SesAppVoiceSettings || null;
 
 const clientSessionId = (() => {
   const key = 'sesappSessionId';
@@ -128,6 +152,239 @@ function usernameToHue(u) {
   return Math.abs(h) % 360;
 }
 function avatarColor(u) { return `hsl(${usernameToHue(u)},65%,55%)`; }
+
+function setAuthMode(mode) {
+  if (mode === 'register' && !registrationEnabled) mode = 'login';
+  authMode = mode === 'register' ? 'register' : 'login';
+  const isRegister = authMode === 'register';
+  authLoginTab?.classList.toggle('active', !isRegister);
+  authRegisterTab?.classList.toggle('active', isRegister);
+  inviteCodeField?.classList.toggle('hidden', !isRegister);
+  if (authSubtitle) {
+    authSubtitle.textContent = isRegister
+      ? 'Yeni hesabını oluştur ve kendi şifrenle giriş yap'
+      : 'Hesabınla giriş yap ve kaldığın yerden devam et';
+  }
+  if (authHelperText) {
+    authHelperText.textContent = isRegister
+      ? 'Kayıt için sunucu davet kodu gerekir. Bu kod eski ortak şifreyle aynıdır.'
+      : 'Kayıt olurken seçtiğin kullanıcı adı ve şifreyle giriş yap.';
+  }
+  if (passwordInput) {
+    passwordInput.autocomplete = isRegister ? 'new-password' : 'current-password';
+    passwordInput.placeholder = isRegister ? 'kendine bir şifre belirle...' : 'şifreni gir...';
+  }
+  if (inviteCodeInput && !isRegister) inviteCodeInput.value = '';
+  $('join-btn').textContent = isRegister ? 'Hesap Oluştur' : 'Giriş Yap';
+}
+
+function setLoginBusy(isBusy) {
+  const joinBtn = $('join-btn');
+  if (joinBtn) joinBtn.disabled = isBusy;
+  usernameInput.disabled = isBusy;
+  passwordInput.disabled = isBusy;
+  if (inviteCodeInput) inviteCodeInput.disabled = isBusy;
+}
+
+function getStoredAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+}
+
+function storeAuthToken(token) {
+  if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+}
+
+function clearStoredAuth() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+function getAuthHeaders(extra = {}) {
+  const headers = new Headers(extra);
+  if (currentAuthToken) headers.set('Authorization', `Bearer ${currentAuthToken}`);
+  return headers;
+}
+
+function handleAuthFailure(message) {
+  currentAuthToken = null;
+  clearStoredAuth();
+  sessionStorage.setItem('sesappLoginError', message || 'Oturumun geçersiz. Tekrar giriş yap.');
+  window.location.reload();
+}
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch {}
+
+  if (!response.ok) {
+    if (currentAuthToken && ['invalid_session', 'revoked_session', 'missing_account'].includes(payload?.code)) {
+      handleAuthFailure(payload?.error);
+    }
+    throw new Error(payload?.error || 'İşlem tamamlanamadı.');
+  }
+
+  return payload;
+}
+
+async function authorizedFetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: getAuthHeaders(options.headers),
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {}
+
+  if (!response.ok) {
+    const error = new Error(payload?.error || `HTTP ${response.status}`);
+    error.code = payload?.code || null;
+    if (['invalid_session', 'revoked_session', 'missing_account'].includes(error.code)) {
+      handleAuthFailure(payload?.error);
+    }
+    throw error;
+  }
+
+  return payload;
+}
+
+function applyRegistrationAvailability() {
+  if (authRegisterTab) authRegisterTab.classList.toggle('hidden', !registrationEnabled);
+  if (!registrationEnabled && authMode === 'register') setAuthMode('login');
+  if (!registrationEnabled && authMode === 'login' && authHelperText) {
+    authHelperText.textContent = 'Yeni hesap kaydı şu anda kapalıysa mevcut hesabınla giriş yapmalısın.';
+  }
+}
+
+async function loadAuthenticatedBootstrap() {
+  const [authPayload, channels] = await Promise.all([
+    authorizedFetchJson('/api/auth/me'),
+    authorizedFetchJson('/api/channels'),
+    loadClientConfig(),
+  ]);
+  currentUser = authPayload.user.username;
+  currentChannels = channels;
+  const savedChannelId = Number(localStorage.getItem(LAST_CHANNEL_ID_KEY));
+  currentChannelId = currentChannels.some((channel) => channel.id === savedChannelId)
+    ? savedChannelId
+    : currentChannels[0]?.id ?? null;
+  if (!currentChannelId) throw new Error('Kanal bulunamadı.');
+}
+
+function rememberCurrentChannel() {
+  if (currentChannelId) localStorage.setItem(LAST_CHANNEL_ID_KEY, String(currentChannelId));
+}
+
+function createSocketConnection() {
+  if (socket) {
+    try { socket.disconnect(); } catch {}
+    socket = null;
+  }
+
+  socket = io({
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000,
+    auth: { token: currentAuthToken },
+  });
+  setupSocket();
+
+  socket.on('connect', () => {
+    hideConnectionBanner();
+    if (!currentUser || !currentAuthToken || !currentChannelId) return;
+    clearTimeout(reconnectVoiceJoinTimer);
+    clearTimeout(reconnectScreenTimer);
+    socket.emit('join', { channelId: currentChannelId, sessionId: clientSessionId });
+    if (currentVoiceRoom) {
+      reconnectVoiceJoinTimer = setTimeout(() => {
+        socket?.emit('voice_join', { room: currentVoiceRoom });
+      }, 500);
+    }
+    if (isSharing && screenStream) {
+      reconnectScreenTimer = setTimeout(() => {
+        socket?.emit('screen_share_start');
+      }, 700);
+    }
+  });
+}
+
+async function bootstrapAuthenticatedApp({ token, shouldLoadSc = true } = {}) {
+  if (token) {
+    currentAuthToken = token;
+    storeAuthToken(token);
+  }
+
+  await loadAuthenticatedBootstrap();
+  rememberCurrentChannel();
+  createSocketConnection();
+  if (shouldLoadSc) loadScApi();
+}
+
+async function logoutAndReset({ revoke = true } = {}) {
+  const tokenBeforeLogout = currentAuthToken;
+  currentAuthToken = null;
+  clearStoredAuth();
+
+  if (revoke && tokenBeforeLogout) {
+    try {
+      currentAuthToken = tokenBeforeLogout;
+      await postJson('/api/auth/logout', {});
+    } catch {}
+  }
+
+  currentAuthToken = null;
+  socket?.disconnect();
+  window.location.reload();
+}
+
+function cloneIceServer(server) {
+  if (!server || typeof server !== 'object') return null;
+  return {
+    ...server,
+    urls: Array.isArray(server.urls) ? [...server.urls] : server.urls,
+  };
+}
+
+function normalizeIceServers(iceServers) {
+  if (!Array.isArray(iceServers)) return null;
+  const normalized = iceServers
+    .map(cloneIceServer)
+    .filter((server) => server && (typeof server.urls === 'string' || Array.isArray(server.urls)));
+  return normalized.length ? normalized : null;
+}
+
+async function loadClientConfig() {
+  if (clientConfigPromise) return clientConfigPromise;
+
+  clientConfigPromise = fetch('/api/client-config', { cache: 'no-store' })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json();
+      const iceServers = normalizeIceServers(payload?.iceServers);
+      if (iceServers) ICE.iceServers = iceServers;
+      if (typeof payload?.registrationEnabled === 'boolean') {
+        registrationEnabled = payload.registrationEnabled;
+        applyRegistrationAvailability();
+      }
+      return payload;
+    })
+    .catch((err) => {
+      console.warn('Client config unavailable, using fallback ICE servers.', err);
+      return null;
+    });
+
+  return clientConfigPromise;
+}
 
 function formatTime(unix) {
   return new Date(unix * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
@@ -158,6 +415,11 @@ function hideConnectionBanner() {
   if (!connectionBanner) return;
   connectionBanner.textContent = defaultConnectionBannerText;
   connectionBanner.classList.add('hidden');
+}
+
+function isEditableTarget(target) {
+  if (!target || !(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
 }
 
 function resetRealtimeStateForReconnect() {
@@ -315,6 +577,7 @@ function switchToChannel(channelId) {
   closeScreenView();
   currentView = 'channel';
   currentChannelId = channelId;
+  rememberCurrentChannel();
   currentDmPeer = null;
   typingUsers.clear();
   updateTypingIndicator();
@@ -581,8 +844,7 @@ async function handleMusicCommand(text) {
   // Başlık araması
   appendSystemMsg(`🔍 Aranıyor: ${text}`, currentChannelId);
   try {
-    const res  = await fetch(`/api/music/search?q=${encodeURIComponent(text)}`);
-    const data = await res.json();
+    const data = await authorizedFetchJson(`/api/music/search?q=${encodeURIComponent(text)}`);
     if (!data.results?.length) {
       appendSystemMsg('🎵 Şarkı bulunamadı.', currentChannelId);
       return true;
@@ -637,6 +899,45 @@ musicVolume.addEventListener('input', () => {
   musicVolumeLabel.textContent = vol + '%';
   localStorage.setItem('musicVolume', vol);
   if (scWidget && scReady) scWidget.setVolume(vol);
+});
+
+function getBaseVoiceAudioConstraints() {
+  return {
+    noiseSuppression: ($('toggle-noise')?.checked ?? true),
+    echoCancellation: ($('toggle-echo')?.checked  ?? true),
+    autoGainControl:  ($('toggle-gain')?.checked  ?? true),
+  };
+}
+
+function setupLocalAudioAnalyser(stream) {
+  audioAnalysers.delete('local');
+  try {
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const an  = ctx.createAnalyser();
+    an.fftSize = 256;
+    src.connect(an);
+    audioAnalysers.set('local', an);
+  } catch {}
+}
+
+const audioDeviceController = voiceSettings?.createAudioDeviceController({
+  localStorageKeyPrefix: '',
+  localStorageRef: localStorage,
+  inputSelect: inputDeviceSelect,
+  outputSelect: outputDeviceSelect,
+  noteEl: audioDeviceNote,
+  screenVideo,
+  getPeerAudioElements: () => [...document.querySelectorAll('audio[id^="audio-"]')],
+  getBaseVoiceConstraints: getBaseVoiceAudioConstraints,
+  getCurrentVoiceRoom: () => currentVoiceRoom,
+  getPeerConnections: () => peerConnections,
+  getLocalStream: () => localStream,
+  setLocalStream: (stream) => { localStream = stream; },
+  setupLocalAudioAnalyser,
+  applyMicState: () => applyMicState(),
+  updateMuteBtn: () => updateMuteBtn(),
+  onMicrophoneError: (error) => alert(`Seçilen mikrofon açılamadı: ${error.message}`),
 });
 
 // ═══════════════ EKRAN PAYLAŞIMI ═══════════════
@@ -759,6 +1060,7 @@ async function createScreenViewConn(sharerId) {
   pc.ontrack = (ev) => {
     screenVideo.srcObject = ev.streams[0];
     applyScreenShareVolume(screenVolume.value);
+    audioDeviceController?.applyPreferredOutputDevice?.();
     screenPanel.classList.remove('hidden');
   };
 
@@ -832,26 +1134,14 @@ async function joinVoiceChannel(room) {
 
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        noiseSuppression: ($('toggle-noise')?.checked ?? true),
-        echoCancellation: ($('toggle-echo')?.checked  ?? true),
-        autoGainControl:  ($('toggle-gain')?.checked  ?? true),
-      },
+      audio: audioDeviceController?.buildVoiceAudioConstraints?.() || getBaseVoiceAudioConstraints(),
       video: false,
     });
   } catch (err) {
     alert('Mikrofona erişim izni reddedildi: ' + err.message);
     return;
   }
-  // Local mikrofon analizi (konuşma göstergesi + metre)
-  try {
-    const ctx = new AudioContext();
-    const src = ctx.createMediaStreamSource(localStream);
-    const an  = ctx.createAnalyser();
-    an.fftSize = 256;
-    src.connect(an);
-    audioAnalysers.set('local', an);
-  } catch {}
+  setupLocalAudioAnalyser(localStream);
 
   currentVoiceRoom = room;
   audioUnlocked = true;
@@ -861,6 +1151,7 @@ async function joinVoiceChannel(room) {
   updateVoiceUI();
   applyVoiceMode();
   startSpeakingDetection();
+  audioDeviceController?.refreshSelectors?.();
 }
 
 async function leaveVoiceChannel() {
@@ -968,6 +1259,7 @@ async function createPeer(peerId, initiator) {
       document.body.append(audio);
     }
     audio.srcObject = ev.streams[0];
+    audioDeviceController?.applyPreferredOutputDevice?.();
     audio.play?.().catch(() => {});
     const username = voicePeerIds.get(peerId);
     if (username) {
@@ -1128,6 +1420,7 @@ function toggleMute() {
 // ── Ses modu (PTT / VAD) ──────────────────────────────────────────────────────
 let pttActive  = false;
 let voiceMode  = localStorage.getItem('voiceMode') || 'vad'; // 'ptt' | 'vad'
+let pttKeyCode = localStorage.getItem('pttKeyCode') || 'Space';
 
 // Mikrofon gerçek durumu: VAD'da isMuted'a bak, PTT'de pttActive && !isMuted
 function applyMicState() {
@@ -1148,28 +1441,32 @@ function applyVoiceMode() {
   updateMuteBtn();
 }
 
-// PTT — Space
-document.addEventListener('keydown', (e) => {
-  if (!currentVoiceRoom || voiceMode !== 'ptt') return;
-  if (e.code !== 'Space') return;
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  if (pttActive) return;
-  pttActive = true;
-  applyMicState();
-  showPttIndicator(true);
-});
+const pttController = voiceSettings?.createPttController({
+  electronAPI,
+  isElectronApp,
+  localStorageKeyPrefix: '',
+  localStorageRef: localStorage,
+  pttKeyBtn,
+  pttKeyDesc,
+  pttKeyNote,
+  hasVoiceRoom: () => Boolean(currentVoiceRoom),
+  isEditableTarget,
+  onStateChange: ({ voiceMode: nextVoiceMode, pttActive: nextPttActive, pttKeyCode: nextPttKeyCode }) => {
+    voiceMode = nextVoiceMode;
+    pttActive = nextPttActive;
+    pttKeyCode = nextPttKeyCode;
 
-document.addEventListener('keyup', (e) => {
-  if (!currentVoiceRoom || voiceMode !== 'ptt') return;
-  if (e.code !== 'Space') return;
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  pttActive = false;
-  applyMicState();
-  showPttIndicator(false);
-});
+    if (voiceMode === 'vad') {
+      hidePttIndicator();
+    } else if (currentVoiceRoom) {
+      showPttIndicator(pttActive);
+    }
 
-// ── Ayarlar modalı ───────────────────────────────────────────────────────────
-const settingsOverlay = $('settings-overlay');
+    applyMicState();
+    updateMuteBtn();
+  },
+});
+pttController?.attach();
 
 // Kayıtlı toggle değerlerini yükle
 ['noise','echo','gain'].forEach(key => {
@@ -1184,21 +1481,34 @@ $('settings-btn').addEventListener('click', () => {
   document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(o => {
     o.classList.toggle('selected', o.dataset.voiceMode === voiceMode);
   });
+  pttController?.syncUi?.();
+  audioDeviceController?.refreshSelectors?.();
   settingsOverlay.classList.remove('hidden');
 });
 
-$('settings-close').addEventListener('click', () => settingsOverlay.classList.add('hidden'));
-settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden'); });
+$('settings-close').addEventListener('click', () => {
+  pttController?.stopCapture?.();
+  settingsOverlay.classList.add('hidden');
+});
+settingsOverlay.addEventListener('click', (e) => {
+  if (e.target !== settingsOverlay) return;
+  pttController?.stopCapture?.();
+  settingsOverlay.classList.add('hidden');
+});
 
 document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(opt => {
   opt.addEventListener('click', () => {
     document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(o => o.classList.remove('selected'));
     opt.classList.add('selected');
-    voiceMode = opt.dataset.voiceMode;
-    localStorage.setItem('voiceMode', voiceMode);
-    applyVoiceMode();
+    pttController?.setVoiceMode?.(opt.dataset.voiceMode);
+    if (!pttController) {
+      voiceMode = opt.dataset.voiceMode;
+      localStorage.setItem('voiceMode', voiceMode);
+      applyVoiceMode();
+    }
   });
 });
+audioDeviceController?.attach?.();
 
 function showPttIndicator(active) {
   let el = $('ptt-indicator');
@@ -1207,7 +1517,8 @@ function showPttIndicator(active) {
     el.id = 'ptt-indicator';
     document.body.append(el);
   }
-  el.textContent = active ? '🎙️ Konuşuyor...' : '🔇 Space\'e bas';
+  const keyLabel = voiceSettings?.formatPttKeyLabel?.(pttKeyCode) || pttKeyCode;
+  el.textContent = active ? '🎙️ Konuşuyor...' : `🔇 ${keyLabel} basılı tut`;
   el.className = active ? 'ptt-talking' : 'ptt-muted';
   el.classList.remove('hidden');
 }
@@ -1305,7 +1616,14 @@ function updateVoiceRoomsUI(state) {
 
 // ═══════════════ SOCKET OLAYLARI ═══════════════
 function setupSocket() {
-  socket.on('auth_error', ({ message }) => {
+  socket.on('auth_error', ({ code, message }) => {
+    if (code === 'invalid_session') {
+      currentAuthToken = null;
+      clearStoredAuth();
+      sessionStorage.setItem('sesappLoginError', message);
+      window.location.reload();
+      return;
+    }
     if (currentUser && appEl.classList.contains('_shown')) {
       showConnectionBanner(`${message} Yeniden bağlanılamadı.`);
       resetRealtimeStateForReconnect();
@@ -1314,7 +1632,7 @@ function setupSocket() {
       return;
     }
     loginError.textContent = message;
-    $('join-btn').disabled = false;
+    setLoginBusy(false);
     socket.disconnect();
     socket = null;
   });
@@ -1523,7 +1841,14 @@ function setupSocket() {
     resetRealtimeStateForReconnect();
   });
 
-  socket.on('connect_error', () => {
+  socket.on('connect_error', (err) => {
+    if (err?.data?.code === 'invalid_session' || err?.data?.code === 'revoked_session' || err?.data?.code === 'missing_account') {
+      currentAuthToken = null;
+      clearStoredAuth();
+      sessionStorage.setItem('sesappLoginError', err.message || 'Oturumun geçersiz. Tekrar giriş yap.');
+      window.location.reload();
+      return;
+    }
     showConnectionBanner('Sunucuya ulaşılamıyor, yeniden deneniyor...');
   });
 
@@ -1534,61 +1859,69 @@ function setupSocket() {
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  const inviteCode = inviteCodeInput?.value || '';
   if (!username) return;
   loginError.textContent = '';
-  $('join-btn').disabled = true;
+  setLoginBusy(true);
+
+  let authPayload;
+  try {
+    authPayload = await postJson(
+      authMode === 'register' ? '/api/auth/register' : '/api/auth/login',
+      authMode === 'register'
+        ? { username, password, inviteCode }
+        : { username, password },
+    );
+  } catch (err) {
+    loginError.textContent = err.message || 'Giriş başarısız.';
+    setLoginBusy(false);
+    return;
+  }
 
   try {
-    const res = await fetch('/api/channels');
-    currentChannels = await res.json();
+    await bootstrapAuthenticatedApp({ token: authPayload.token });
   } catch {
     loginError.textContent = 'Sunucuya bağlanılamadı.';
-    $('join-btn').disabled = false;
+    clearStoredAuth();
+    setLoginBusy(false);
     return;
   }
-
-  if (!currentChannels.length) {
-    loginError.textContent = 'Kanal bulunamadı.';
-    $('join-btn').disabled = false;
-    return;
-  }
-
-  currentUser      = username;
-  currentChannelId = currentChannels[0].id;
-
-  const savedCreds = { username, password: passwordInput.value, sessionId: clientSessionId };
-
-  socket = io({
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
-    timeout: 20000,
-  });
-  setupSocket();
-
-  // İlk bağlantı + otomatik yeniden bağlanma — connect her ikisini de kapsar
-  socket.on('connect', () => {
-    hideConnectionBanner();
-    if (!currentUser) return;
-    clearTimeout(reconnectVoiceJoinTimer);
-    clearTimeout(reconnectScreenTimer);
-    socket.emit('join', { ...savedCreds, channelId: currentChannelId });
-    if (currentVoiceRoom) {
-      reconnectVoiceJoinTimer = setTimeout(() => {
-        socket?.emit('voice_join', { room: currentVoiceRoom });
-      }, 500);
-    }
-    if (isSharing && screenStream) {
-      reconnectScreenTimer = setTimeout(() => {
-        socket?.emit('screen_share_start');
-      }, 700);
-    }
-  });
-
-  // SoundCloud API'yi ancak giriş sonrası yükle
-  loadScApi();
+  setLoginBusy(false);
 });
+
+authLoginTab?.addEventListener('click', () => {
+  loginError.textContent = '';
+  setAuthMode('login');
+});
+authRegisterTab?.addEventListener('click', () => {
+  loginError.textContent = '';
+  setAuthMode('register');
+});
+logoutBtn?.addEventListener('click', () => {
+  logoutAndReset();
+});
+
+setAuthMode('login');
+applyRegistrationAvailability();
+loadClientConfig();
+const pendingLoginError = sessionStorage.getItem('sesappLoginError');
+if (pendingLoginError) {
+  loginError.textContent = pendingLoginError;
+  sessionStorage.removeItem('sesappLoginError');
+}
+
+const existingAuthToken = getStoredAuthToken();
+if (existingAuthToken) {
+  setLoginBusy(true);
+  bootstrapAuthenticatedApp({ token: existingAuthToken, shouldLoadSc: true })
+    .catch((err) => {
+      clearStoredAuth();
+      currentAuthToken = null;
+      loginError.textContent = err?.message || 'Oturum geri yüklenemedi.';
+      setLoginBusy(false);
+    });
+}
 
 // ═══════════════ MESAJ GÖNDER ═══════════════
 messageForm.addEventListener('submit', async (e) => {

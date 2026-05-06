@@ -54,6 +54,28 @@ input { outline: none; border: none; background: none; }
 .login-card h1 { color: var(--text-1); font-size: 1.6rem; font-weight: 800; margin-bottom: 6px; }
 .login-sub    { color: var(--text-m); font-size: .9rem; margin-bottom: 28px; }
 
+#auth-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.auth-mode-btn {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  font-weight: 700;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.auth-mode-btn:hover { background: var(--bg-hover); color: var(--text-1); }
+.auth-mode-btn.active {
+  background: rgba(88,101,242,.18);
+  color: var(--text-1);
+  border-color: rgba(88,101,242,.65);
+}
+
 #login-error { color: var(--red); font-size: .82rem; min-height: 18px; margin-bottom: 8px; }
 
 #login-form { display: flex; flex-direction: column; gap: 10px; text-align: left; }
@@ -75,6 +97,13 @@ input { outline: none; border: none; background: none; }
 }
 #login-form input:focus { border-color: var(--accent); }
 
+.login-helper {
+  color: var(--text-m);
+  font-size: .76rem;
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
 #join-btn {
   margin-top: 6px;
   padding: 13px;
@@ -87,6 +116,7 @@ input { outline: none; border: none; background: none; }
 }
 #join-btn:hover  { background: var(--accent-h); }
 #join-btn:active { transform: scale(.98); }
+#join-btn:disabled { opacity: .65; cursor: wait; }
 
 /* ═══════════════ APP GRID ═══════════════ */
 #app {
@@ -981,6 +1011,63 @@ li.active .ch-hash { color: var(--text-2); }
 .settings-opt-icon { font-size: 1.4rem; }
 .settings-opt-label { color: var(--text-1); font-weight: 600; font-size: .9rem; }
 .settings-opt-desc  { color: var(--text-m); font-size: .78rem; margin-top: 2px; }
+.settings-inline-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+}
+.settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-field-label {
+  color: var(--text-2);
+  font-size: .82rem;
+  font-weight: 600;
+}
+.settings-field select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-1);
+  font-size: .86rem;
+  outline: none;
+}
+.settings-field select:focus { border-color: var(--accent); }
+#ptt-key-btn {
+  min-width: 140px;
+  padding: 10px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-1);
+  font-size: .84rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color .12s, background .12s, color .12s;
+}
+#ptt-key-btn:hover {
+  border-color: var(--accent);
+  color: #fff;
+}
+#ptt-key-btn.capturing {
+  background: rgba(88,101,242,.18);
+  border-color: var(--accent);
+  color: #fff;
+}
 
 /* ═══════════════ MÜZİK SES AYARI ═══════════════ */
 #music-volume-wrap {
@@ -1124,6 +1211,17 @@ li.active .ch-hash { color: var(--text-2); }
 }
 .settings-toggle input[type=checkbox]:checked::after { left: 19px; }
 .settings-note { color: var(--text-m); font-size: .72rem; margin-top: 8px; }
+
+@media (max-width: 720px) {
+  .settings-inline-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  #ptt-key-btn {
+    width: 100%;
+  }
+}
 
 /* Ses kanalı + butonu */
 .channel-group-header {
