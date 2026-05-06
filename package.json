@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Arkadaşlarla gerçek zamanlı sohbet uygulaması",
   "main": "electron/main.js",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
