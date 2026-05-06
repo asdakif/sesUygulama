@@ -8,7 +8,10 @@ const db        = require('./database');
 
 const app    = express();
 const server = http.createServer(app);
-const io     = new Server(server);
+const io     = new Server(server, {
+  pingInterval: 25000,
+  pingTimeout: 60000,
+});
 const DEFAULT_PORT = process.env.PORT === undefined ? 3000 : Number(process.env.PORT);
 
 // ─── Oda şifresi ─────────────────────────────────────────────────────────────
@@ -51,12 +54,14 @@ app.use('/api/', limiter);
 
 // Socket.io için bağlantı rate limiting
 const socketConnections = new Map(); // ip → timestamp[]
+const SOCKET_RATE_WINDOW_MS = 60_000;
+const SOCKET_RATE_MAX = Number(process.env.SOCKET_RATE_MAX || 30);
 function isRateLimited(ip) {
   const now = Date.now();
-  const times = (socketConnections.get(ip) || []).filter(t => now - t < 60_000);
+  const times = (socketConnections.get(ip) || []).filter(t => now - t < SOCKET_RATE_WINDOW_MS);
   times.push(now);
   socketConnections.set(ip, times);
-  return times.length > 10; // dakikada 10'dan fazla bağlantı
+  return times.length > SOCKET_RATE_MAX;
 }
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -150,7 +155,7 @@ function getMusicPayload(voiceRoom) {
 }
 
 // ─── Metin kanalı durumu ─────────────────────────────────────────────────────
-// socketId → { username, channelId }
+// socketId → { username, channelId, sessionId }
 const connectedUsers = new Map();
 
 function getRoomName(channelId) { return `channel:${channelId}`; }
@@ -185,7 +190,7 @@ function isUsernameTaken(username) {
 
 function getSocketIdByUsername(username) {
   for (const [id, u] of connectedUsers) {
-    if (u.username === username) return id;
+    if (u.username.toLowerCase() === username.toLowerCase()) return id;
   }
   return null;
 }
@@ -446,8 +451,9 @@ io.on('connection', (socket) => {
   }
 
   // ── Giriş ──────────────────────────────────────────────────────────────────
-  socket.on('join', ({ username, password, channelId }) => {
+  socket.on('join', ({ username, password, channelId, sessionId }) => {
     username = username?.trim();
+    sessionId = typeof sessionId === 'string' ? sessionId.trim().slice(0, 128) : '';
     if (!username || username.length < 2 || username.length > 20) {
       return socket.emit('auth_error', { message: 'Kullanıcı adı 2-20 karakter arasında olmalı.' });
     }
@@ -455,20 +461,29 @@ io.on('connection', (socket) => {
       return socket.emit('auth_error', { message: 'Yanlış şifre.' });
     }
     if (isUsernameTaken(username)) {
-      // Eski socket hâlâ aktif mi kontrol et; değilse temizle (race condition)
       const oldId = getSocketIdByUsername(username);
-      if (oldId && io.sockets.sockets.get(oldId)) {
+      const oldSocket = oldId ? io.sockets.sockets.get(oldId) : null;
+      const oldUser = oldId ? connectedUsers.get(oldId) : null;
+      const sameSessionReconnect = Boolean(sessionId && oldUser?.sessionId && oldUser.sessionId === sessionId);
+
+      if (oldSocket && !sameSessionReconnect) {
         return socket.emit('auth_error', { message: `"${username}" kullanıcı adı zaten alınmış.` });
       }
-      // Eski socket ölmüş ama connectedUsers'tan silinmemiş — temizle
-      if (oldId) connectedUsers.delete(oldId);
+      if (oldSocket && sameSessionReconnect) {
+        endScreenShare(oldId, oldUser?.channelId);
+        leaveAllVoiceRooms(oldSocket);
+        connectedUsers.delete(oldId);
+        oldSocket.disconnect(true);
+      } else if (oldId) {
+        connectedUsers.delete(oldId);
+      }
     }
     if (!db.getChannelById(channelId)) {
       return socket.emit('auth_error', { message: 'Kanal bulunamadı.' });
     }
 
     db.ensureUser(username);
-    connectedUsers.set(socket.id, { username, channelId });
+    connectedUsers.set(socket.id, { username, channelId, sessionId });
     socket.join(getRoomName(channelId));
 
     socket.emit('message_history', {

@@ -38,6 +38,8 @@ const peerVolumes     = {};        // username → 0-1
 const audioAnalysers  = new Map(); // socketId|'local' → AnalyserNode
 const pendingVoiceCandidates = new Map(); // socketId → RTCIceCandidateInit[]
 const peerDisconnectTimers   = new Map(); // socketId → timeoutId
+let reconnectVoiceJoinTimer  = null;
+let reconnectScreenTimer     = null;
 let   speakingTimer   = null;
 const SPEAKING_THR    = 12;        // 0-255 eşik
 
@@ -64,6 +66,7 @@ const usernameInput  = $('username-input');
 const passwordInput  = $('password-input');
 const loginError     = $('login-error');
 const appEl          = $('app');
+const connectionBanner = $('connection-banner');
 const channelList    = $('channel-list');
 const dmUserList     = $('dm-user-list');
 const messagesEl     = $('messages-container');
@@ -106,6 +109,17 @@ const qualityOverlay      = $('quality-modal-overlay');
 const voiceControls  = $('voice-controls');
 const vcMuteBtn      = $('vc-mute-btn');
 const emojiPicker    = $('emoji-picker');
+const defaultConnectionBannerText = connectionBanner?.textContent || 'Bağlantı kesildi — yeniden bağlanılıyor...';
+
+const clientSessionId = (() => {
+  const key = 'sesappSessionId';
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id = globalThis.crypto?.randomUUID?.() || `sess-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(key, id);
+  }
+  return id;
+})();
 
 // ═══════════════ YARDIMCI FONKSİYONLAR ═══════════════
 function usernameToHue(u) {
@@ -132,6 +146,27 @@ function isAtBottom() {
 }
 function scrollToBottom(force = false) {
   if (force || isAtBottom()) messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function showConnectionBanner(text = defaultConnectionBannerText) {
+  if (!connectionBanner) return;
+  connectionBanner.textContent = text;
+  connectionBanner.classList.remove('hidden');
+}
+
+function hideConnectionBanner() {
+  if (!connectionBanner) return;
+  connectionBanner.textContent = defaultConnectionBannerText;
+  connectionBanner.classList.add('hidden');
+}
+
+function resetRealtimeStateForReconnect() {
+  closeAllPeers();
+  closeScreenView();
+  for (const [, pc] of screenPeerConns) {
+    try { pc.close(); } catch {}
+  }
+  screenPeerConns.clear();
 }
 
 // ═══════════════ MESAJ RENDER ═══════════════
@@ -1271,9 +1306,11 @@ function updateVoiceRoomsUI(state) {
 // ═══════════════ SOCKET OLAYLARI ═══════════════
 function setupSocket() {
   socket.on('auth_error', ({ message }) => {
-    // Zaten giriş yapılmışsa (auto-reconnect race condition) sayfayı yenile
     if (currentUser && appEl.classList.contains('_shown')) {
-      location.reload();
+      showConnectionBanner(`${message} Yeniden bağlanılamadı.`);
+      resetRealtimeStateForReconnect();
+      socket.disconnect();
+      socket = null;
       return;
     }
     loginError.textContent = message;
@@ -1482,9 +1519,12 @@ function setupSocket() {
   });
 
   socket.on('disconnect', () => {
-    $('connection-banner')?.classList.remove('hidden');
-    leaveVoiceChannel();
-    stopScreenShare();
+    showConnectionBanner();
+    resetRealtimeStateForReconnect();
+  });
+
+  socket.on('connect_error', () => {
+    showConnectionBanner('Sunucuya ulaşılamıyor, yeniden deneniyor...');
   });
 
   setupPokerSocket();
@@ -1516,18 +1556,33 @@ loginForm.addEventListener('submit', async (e) => {
   currentUser      = username;
   currentChannelId = currentChannels[0].id;
 
-  const savedCreds = { username, password: passwordInput.value };
+  const savedCreds = { username, password: passwordInput.value, sessionId: clientSessionId };
 
-  socket = io();
+  socket = io({
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000,
+  });
   setupSocket();
 
   // İlk bağlantı + otomatik yeniden bağlanma — connect her ikisini de kapsar
   socket.on('connect', () => {
-    $('connection-banner')?.classList.add('hidden');
+    hideConnectionBanner();
     if (!currentUser) return;
+    clearTimeout(reconnectVoiceJoinTimer);
+    clearTimeout(reconnectScreenTimer);
     socket.emit('join', { ...savedCreds, channelId: currentChannelId });
     if (currentVoiceRoom) {
-      setTimeout(() => socket.emit('voice_join', { room: currentVoiceRoom }), 500);
+      reconnectVoiceJoinTimer = setTimeout(() => {
+        socket?.emit('voice_join', { room: currentVoiceRoom });
+      }, 500);
+    }
+    if (isSharing && screenStream) {
+      reconnectScreenTimer = setTimeout(() => {
+        socket?.emit('screen_share_start');
+      }, 700);
     }
   });
 
