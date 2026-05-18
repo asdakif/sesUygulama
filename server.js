@@ -29,6 +29,11 @@ const io = new Server(server, {
   pingInterval: config.socketPingInterval,
   pingTimeout: config.socketPingTimeout,
 });
+
+// Railway requests arrive through a reverse proxy, and express-rate-limit
+// expects forwarded IPs to be trusted to key clients correctly.
+app.set('trust proxy', 1);
+
 const { requireAuth } = createHttpAuthMiddleware({
   verifyAuthToken,
   secret: config.authSecret,
@@ -195,6 +200,7 @@ const realtime = createRealtimeState({
 const {
   connectedUsers,
   voiceRooms,
+  screenShares,
   musicState,
   createMusicState,
   getRoomName,
@@ -633,10 +639,22 @@ io.on('connection', (socket) => {
   });
 
   // WebRTC sinyalleme — sadece yönlendir
-  socket.on('voice_offer',     ({ to, offer })     =>
-    io.to(to).emit('voice_offer',     { from: socket.id, offer }));
-  socket.on('voice_answer',    ({ to, answer })    =>
-    io.to(to).emit('voice_answer',    { from: socket.id, answer }));
+  socket.on('voice_offer', ({ to, offer }) => {
+    const user = connectedUsers.get(socket.id);
+    io.to(to).emit('voice_offer', {
+      from: socket.id,
+      offer,
+      fromUsername: user?.username,
+    });
+  });
+  socket.on('voice_answer', ({ to, answer }) => {
+    const user = connectedUsers.get(socket.id);
+    io.to(to).emit('voice_answer', {
+      from: socket.id,
+      answer,
+      fromUsername: user?.username,
+    });
+  });
   socket.on('voice_ice',       ({ to, candidate }) =>
     io.to(to).emit('voice_ice',       { from: socket.id, candidate }));
 
