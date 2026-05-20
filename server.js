@@ -416,6 +416,7 @@ io.on('connection', (socket) => {
   socket.on('join', ({ channelId, sessionId }) => {
     sessionId = typeof sessionId === 'string' ? sessionId.trim().slice(0, 128) : '';
     const username = socket.data.auth?.username;
+    let sameSessionReconnect = false;
     if (!username) {
       socketLog.warn('join_missing_socket_auth', { socketId: socket.id, ip });
       return socket.emit('auth_error', {
@@ -428,7 +429,7 @@ io.on('connection', (socket) => {
       const oldId = getSocketIdByUsername(username);
       const oldSocket = oldId ? io.sockets.sockets.get(oldId) : null;
       const oldUser = oldId ? connectedUsers.get(oldId) : null;
-      const sameSessionReconnect = Boolean(sessionId && oldUser?.sessionId && oldUser.sessionId === sessionId);
+      sameSessionReconnect = Boolean(sessionId && oldUser?.sessionId && oldUser.sessionId === sessionId);
 
       if (oldSocket && !sameSessionReconnect) {
         socketLog.warn('join_username_taken', { socketId: socket.id, username, ip });
@@ -468,9 +469,11 @@ io.on('connection', (socket) => {
     broadcastUserList(channelId);
     io.emit('global_user_list', { users: getAllOnlineUsers() });
 
-    socket.to(getRoomName(channelId)).emit('system_message', {
-      text: `${username} katıldı.`, channelId,
-    });
+    if (!sameSessionReconnect) {
+      socket.to(getRoomName(channelId)).emit('system_message', {
+        text: `${username} katıldı.`, channelId,
+      });
+    }
   });
 
   // ── Kanal değiştir ─────────────────────────────────────────────────────────
