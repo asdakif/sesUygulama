@@ -24,7 +24,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
 
 function isAllowedPermission(permission) {
-  return ['media', 'display-capture', 'fullscreen'].includes(permission);
+  return ['media', 'display-capture', 'fullscreen', 'speaker-selection'].includes(permission);
 }
 
 function getEmbeddedServer() {

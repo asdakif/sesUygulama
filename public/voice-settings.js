@@ -229,9 +229,34 @@
     const outputDeviceSupported =
       typeof HTMLMediaElement !== 'undefined' &&
       typeof HTMLMediaElement.prototype.setSinkId === 'function';
+    const outputPickerSupported =
+      typeof navigator !== 'undefined' &&
+      typeof navigator.mediaDevices?.selectAudioOutput === 'function';
 
     let preferredInputDeviceId = localStorageRef.getItem(storageKey('voiceInputDeviceId')) || 'default';
     let preferredOutputDeviceId = localStorageRef.getItem(storageKey('voiceOutputDeviceId')) || 'default';
+    let accessProbePromise = null;
+
+    async function ensureReadableDeviceLabels() {
+      if (!navigator.mediaDevices?.getUserMedia) return false;
+      if (accessProbePromise) return accessProbePromise;
+
+      accessProbePromise = (async () => {
+        let tempStream = null;
+        try {
+          tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          return true;
+        } catch (error) {
+          console.warn('[Ses] Cihaz izinleri alınamadı:', error.message);
+          return false;
+        } finally {
+          tempStream?.getTracks().forEach((track) => track.stop());
+          accessProbePromise = null;
+        }
+      })();
+
+      return accessProbePromise;
+    }
 
     function buildVoiceAudioConstraints() {
       const constraints = { ...getBaseVoiceConstraints() };
@@ -294,11 +319,20 @@
       return nextValue;
     }
 
-    async function refreshSelectors() {
+    async function refreshSelectors({ ensurePermissions = false } = {}) {
       if (!navigator.mediaDevices?.enumerateDevices) return;
 
       try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
+        let devices = await navigator.mediaDevices.enumerateDevices();
+        const hasHiddenLabels = devices.some((device) =>
+          (device.kind === 'audioinput' || device.kind === 'audiooutput') && !device.label
+        );
+
+        if (ensurePermissions && hasHiddenLabels) {
+          const granted = await ensureReadableDeviceLabels();
+          if (granted) devices = await navigator.mediaDevices.enumerateDevices();
+        }
+
         const inputDevices = devices.filter((device) => device.kind === 'audioinput');
         const outputDevices = devices.filter((device) => device.kind === 'audiooutput');
 
@@ -320,9 +354,15 @@
 
         if (outputSelect) outputSelect.disabled = !outputDeviceSupported || outputSelect.disabled;
         if (noteEl) {
-          noteEl.textContent = outputDeviceSupported
-            ? '* Sesli kanaldaysan mikrofon değişikliği hemen uygulanır.'
-            : '* Hoparlör seçimi bu tarayıcıda desteklenmiyor; mikrofon değişikliği hemen uygulanır.';
+          if (!outputDeviceSupported) {
+            noteEl.textContent = '* Hoparlör seçimi bu tarayıcıda desteklenmiyor; mikrofon değişikliği hemen uygulanır.';
+          } else if (!inputDevices.length && !outputDevices.length) {
+            noteEl.textContent = '* Ses cihazı bulunamadı. İzin verdikten sonra tekrar dene.';
+          } else if (outputPickerSupported) {
+            noteEl.textContent = '* Sesli kanaldaysan mikrofon değişikliği hemen uygulanır. Hoparlör seçince tarayıcı izin isteyebilir.';
+          } else {
+            noteEl.textContent = '* Sesli kanaldaysan mikrofon değişikliği hemen uygulanır.';
+          }
         }
       } catch (error) {
         console.warn('[Ses] Cihaz listesi alınamadı:', error.message);
@@ -356,32 +396,60 @@
         oldStream?.getTracks().forEach((track) => track.stop());
         applyMicState?.();
         updateMuteBtn?.();
+        return true;
       } catch (error) {
         console.warn('[Ses] Mikrofon değiştirilemedi:', error.message);
         onMicrophoneError?.(error);
+        return false;
       }
     }
 
     function attach() {
       inputSelect?.addEventListener('change', async () => {
+        const previousInputDeviceId = preferredInputDeviceId;
         preferredInputDeviceId = inputSelect.value || 'default';
         localStorageRef.setItem(storageKey('voiceInputDeviceId'), preferredInputDeviceId);
-        await refreshActiveMicrophone();
-        await refreshSelectors();
+        const switched = await refreshActiveMicrophone();
+        if (getCurrentVoiceRoom?.() && switched === false) {
+          preferredInputDeviceId = previousInputDeviceId;
+          localStorageRef.setItem(storageKey('voiceInputDeviceId'), preferredInputDeviceId);
+        }
+        await refreshSelectors({ ensurePermissions: true });
       });
 
       outputSelect?.addEventListener('change', async () => {
-        preferredOutputDeviceId = outputSelect.value || 'default';
-        localStorageRef.setItem(storageKey('voiceOutputDeviceId'), preferredOutputDeviceId);
+        const previousOutputDeviceId = preferredOutputDeviceId;
+        let nextOutputDeviceId = outputSelect.value || 'default';
+
+        try {
+          if (nextOutputDeviceId !== 'default' && outputPickerSupported) {
+            const grantedDevice = await navigator.mediaDevices.selectAudioOutput({
+              deviceId: nextOutputDeviceId,
+            });
+            if (grantedDevice?.deviceId) nextOutputDeviceId = grantedDevice.deviceId;
+          }
+
+          preferredOutputDeviceId = nextOutputDeviceId;
+          localStorageRef.setItem(storageKey('voiceOutputDeviceId'), preferredOutputDeviceId);
+          await applyPreferredOutputDevice();
+          await refreshSelectors({ ensurePermissions: true });
+        } catch (error) {
+          console.warn('[Ses] Çıkış cihazı değiştirilemedi:', error.message);
+          preferredOutputDeviceId = previousOutputDeviceId;
+          localStorageRef.setItem(storageKey('voiceOutputDeviceId'), preferredOutputDeviceId);
+          if (outputSelect) outputSelect.value = preferredOutputDeviceId;
+          if (noteEl) {
+            noteEl.textContent = '* Hoparlör seçimi uygulanamadı. Tarayıcı izni veya cihaz erişimi gerekli olabilir.';
+          }
+        }
+      });
+
+      navigator.mediaDevices?.addEventListener?.('devicechange', async () => {
+        await refreshSelectors();
         await applyPreferredOutputDevice();
       });
 
-      navigator.mediaDevices?.addEventListener?.('devicechange', () => {
-        refreshSelectors();
-        applyPreferredOutputDevice();
-      });
-
-      refreshSelectors();
+      refreshSelectors({ ensurePermissions: true });
     }
 
     return {
