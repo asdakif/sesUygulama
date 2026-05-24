@@ -44,6 +44,26 @@ const audioAnalysers  = new Map(); // socketId|'local' → AnalyserNode
 const pendingVoiceCandidates = new Map(); // socketId → RTCIceCandidateInit[]
 const peerDisconnectTimers   = new Map(); // socketId → timeoutId
 let reconnectVoiceJoinTimer  = null;
+
+function syncPeerAudioElement(peerId) {
+  const audio = document.getElementById(`audio-${peerId}`);
+  if (!audio) return;
+  const username = voicePeerIds.get(peerId);
+  if (username) {
+    audio.volume = Math.min(peerVolumes[username] ?? 1, 1);
+    audio.muted = locallyMuted.has(username);
+  } else {
+    audio.volume = 1;
+    audio.muted = false;
+  }
+}
+
+function tryPlayAllPeerAudioElements() {
+  for (const el of document.querySelectorAll('audio[id^="audio-"]')) {
+    const p = el.play?.();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  }
+}
 let reconnectScreenTimer     = null;
 let   speakingTimer   = null;
 const SPEAKING_THR    = 12;        // 0-255 eşik
@@ -675,6 +695,7 @@ emojiPicker.addEventListener('click', (e) => {
 document.addEventListener('click', () => {
   emojiPicker.classList.add('hidden');
   emojiTarget = null;
+  if (currentVoiceRoom) tryPlayAllPeerAudioElements();
 });
 
 // ═══════════════ MÜZİK BOTU (SoundCloud) ═══════════════
@@ -1152,6 +1173,7 @@ async function joinVoiceChannel(room) {
   applyVoiceMode();
   startSpeakingDetection();
   audioDeviceController?.refreshSelectors?.();
+  tryPlayAllPeerAudioElements();
 }
 
 async function leaveVoiceChannel() {
@@ -1238,6 +1260,7 @@ function schedulePeerDisconnectCleanup(peerId, pc) {
 async function ensureVoicePeerConnection(peerId, username) {
   if (!peerId || peerId === socket?.id) return null;
   if (username) voicePeerIds.set(peerId, username);
+  syncPeerAudioElement(peerId);
   return createPeer(peerId, shouldInitiateVoicePeer(peerId));
 }
 
@@ -1249,7 +1272,7 @@ async function createPeer(peerId, initiator) {
 
   if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
-  pc.ontrack = (ev) => {
+  pc.ontrack = async (ev) => {
     let audio = document.getElementById(`audio-${peerId}`);
     if (!audio) {
       audio = document.createElement('audio');
@@ -1259,16 +1282,19 @@ async function createPeer(peerId, initiator) {
       document.body.append(audio);
     }
     audio.srcObject = ev.streams[0];
-    audioDeviceController?.applyPreferredOutputDevice?.();
-    audio.play?.().catch(() => {});
-    const username = voicePeerIds.get(peerId);
-    if (username) {
-      audio.volume   = peerVolumes[username] ?? 1;
-      audio.muted    = locallyMuted.has(username);
+    try {
+      await audioDeviceController?.applyPreferredOutputDevice?.();
+    } catch {}
+    syncPeerAudioElement(peerId);
+    try {
+      await audio.play();
+    } catch {
+      tryPlayAllPeerAudioElements();
     }
     // Konuşma analizi
     try {
       const ctx = new AudioContext();
+      if (ctx.state === 'suspended') await ctx.resume();
       const src = ctx.createMediaStreamSource(ev.streams[0]);
       const an  = ctx.createAnalyser();
       an.fftSize = 256;
@@ -1482,7 +1508,7 @@ $('settings-btn').addEventListener('click', () => {
     o.classList.toggle('selected', o.dataset.voiceMode === voiceMode);
   });
   pttController?.syncUi?.();
-  audioDeviceController?.refreshSelectors?.();
+  audioDeviceController?.refreshSelectors?.({ ensurePermissions: true });
   settingsOverlay.classList.remove('hidden');
 });
 
@@ -1748,9 +1774,11 @@ function setupSocket() {
     await ensureVoicePeerConnection(socketId, username);
   });
 
-  socket.on('voice_offer', async ({ from, offer }) => {
+  socket.on('voice_offer', async ({ from, offer, fromUsername }) => {
     if (!currentVoiceRoom) return;
+    if (fromUsername) voicePeerIds.set(from, fromUsername);
     const pc = await createPeer(from, false);
+    syncPeerAudioElement(from);
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
     await flushPendingVoiceCandidates(from);
     const answer = await pc.createAnswer();
@@ -1758,8 +1786,10 @@ function setupSocket() {
     socket.emit('voice_answer', { to: from, answer });
   });
 
-  socket.on('voice_answer', async ({ from, answer }) => {
+  socket.on('voice_answer', async ({ from, answer, fromUsername }) => {
     if (!currentVoiceRoom) return;
+    if (fromUsername) voicePeerIds.set(from, fromUsername);
+    syncPeerAudioElement(from);
     const pc = peerConnections.get(from);
     if (pc) {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
