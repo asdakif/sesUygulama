@@ -33,7 +33,7 @@ npm run desktop
 
 These are intentionally left as separate follow-up projects because they change product behavior or require external services:
 
-1. Set `RTC_ICE_SERVERS_JSON` in Railway with your production TURN service instead of relying on public relay defaults.
+1. Provision a production TURN service and set either `RTC_ICE_SERVERS_JSON` or the simpler `TURN_*` variables in Railway.
 2. Add signed release builds for Windows/macOS.
 3. Add a true global push-to-talk hotkey if background-game support is needed.
 4. Move the remaining large feature blocks (`poker`, chat rendering, WebRTC signaling) into more modules.
@@ -59,3 +59,5 @@ Example `RTC_ICE_SERVERS_JSON` value for Railway:
   }
 ]
 ```
+
+Or use the simpler `TURN_*` variables documented in [`docs/turn-setup.md`](./turn-setup.md).

@@ -2,9 +2,13 @@
 
 const path = require('path');
 
-const defaultRtcIceServers = Object.freeze([
+const defaultStunIceServers = Object.freeze([
   Object.freeze({ urls: 'stun:stun.l.google.com:19302' }),
   Object.freeze({ urls: 'stun:stun1.l.google.com:19302' }),
+]);
+
+const defaultRtcIceServers = Object.freeze([
+  ...defaultStunIceServers,
   Object.freeze({
     urls: [
       'turn:openrelay.metered.ca:80',
@@ -45,6 +49,32 @@ function normalizeIceServer(server) {
   return normalized;
 }
 
+function readBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function readBooleanFromEnv(env, name, fallback) {
+  const value = env?.[name];
+  if (value === undefined || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function splitCsv(rawValue) {
+  if (typeof rawValue !== 'string') return [];
+  return rawValue
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 function parseIceServers(rawValue) {
   if (typeof rawValue !== 'string' || !rawValue.trim()) return null;
 
@@ -58,7 +88,36 @@ function parseIceServers(rawValue) {
   }
 }
 
+function buildManagedTurnIceServers(env = process.env) {
+  const hosts = splitCsv(env.TURN_HOSTS || env.TURN_HOST || '');
+  const username = typeof env.TURN_USERNAME === 'string' ? env.TURN_USERNAME.trim() : '';
+  const credential = typeof env.TURN_PASSWORD === 'string' ? env.TURN_PASSWORD.trim() : '';
+  if (!hosts.length || !username || !credential) return null;
+
+  const udpPort = Number(env.TURN_PORT || 3478);
+  const tlsPort = Number(env.TURNS_PORT || 5349);
+  const includeTcp = readBooleanFromEnv(env, 'TURN_ENABLE_TCP', true);
+  const includeTls = readBooleanFromEnv(env, 'TURN_ENABLE_TLS', true);
+  const urls = [];
+
+  for (const host of hosts) {
+    urls.push(`turn:${host}:${udpPort}`);
+    if (includeTcp) urls.push(`turn:${host}:${udpPort}?transport=tcp`);
+    if (includeTls) urls.push(`turns:${host}:${tlsPort}?transport=tcp`);
+  }
+
+  return [
+    ...defaultStunIceServers,
+    {
+      urls,
+      username,
+      credential,
+    },
+  ];
+}
+
 const envRtcIceServers = parseIceServers(process.env.RTC_ICE_SERVERS_JSON);
+const envManagedTurnIceServers = buildManagedTurnIceServers(process.env);
 
 module.exports = {
   defaultPort: process.env.PORT === undefined ? 3000 : Number(process.env.PORT),
@@ -74,9 +133,11 @@ module.exports = {
   soundcloudRefreshMs: readNumber('SC_REFRESH_MS', 12 * 60 * 60 * 1000),
   soundcloudUserAgent: process.env.SC_UA ||
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  defaultStunIceServers,
   defaultRtcIceServers,
-  rtcIceServers: envRtcIceServers || defaultRtcIceServers,
-  hasCustomRtcIceServers: Boolean(envRtcIceServers),
+  rtcIceServers: envRtcIceServers || envManagedTurnIceServers || defaultRtcIceServers,
+  hasCustomRtcIceServers: Boolean(envRtcIceServers || envManagedTurnIceServers),
+  buildManagedTurnIceServers,
   parseIceServers,
   staticDir: path.join(__dirname, '..', 'public'),
   defaultVoiceRooms: ['sesli-genel', 'sesli-oyun'],
