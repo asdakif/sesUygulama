@@ -5,7 +5,6 @@ const test = require('node:test');
 
 const { hashPassword } = require('../server/auth');
 const {
-  completePendingAuth,
   createIsolatedServer,
   postJson,
 } = require('./helpers/integration-auth');
@@ -36,22 +35,13 @@ test('admin delete removes the account immediately and frees a reserved pending 
     password: 'AdminPass123!mail',
   });
   assert.equal(login.response.status, 200);
-  assert.ok(login.payload.pending_token);
-
-  const finalized = await completePendingAuth({
-    baseUrl,
-    pendingToken: login.payload.pending_token,
-    pendingPayload: login.payload,
-    getNoopOutbox: harness.getNoopOutbox,
-    email: 'admin@example.com',
-  });
-  assert.equal(finalized.verify.response.status, 200);
+  assert.ok(login.payload.access_token);
 
   const deleteResponse = await fetch(`${baseUrl}/api/admin/users/${encodeURIComponent('victim')}`, {
     method: 'DELETE',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${finalized.verify.payload.access_token}`,
+      Authorization: `Bearer ${login.payload.access_token}`,
     },
     body: JSON.stringify({ confirmation_phrase: 'HESABIMI SIL' }),
   });

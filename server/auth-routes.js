@@ -666,55 +666,6 @@ function createAuthRouter({
       });
       freshAccount = db.getAccount(account.username);
     }
-    if (config.mfaRequired) {
-      const mfaEmail = getEmailMfaAddress(freshAccount);
-      if (!mfaEmail) {
-        audit.record('login_fail', {
-          actorUsername: freshAccount.username,
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          metadata: { reason: 'missing_mfa_email' },
-        });
-        return sendApiError(
-          res,
-          409,
-          'Bu hesap icin kullanilabilir bir e-posta bulunamadi. Yoneticiyle iletisime gec.',
-          'missing_mfa_email',
-        );
-      }
-      const challenge = issuePendingChallenge(freshAccount, 'email', {
-        delivery: 'email',
-        emailHint: maskEmailAddress(mfaEmail),
-      });
-      let loginWarning = null;
-      try {
-        await dispatchEmailAuthCode({
-          account: freshAccount,
-          email: mfaEmail,
-          challengeId: challenge.pending_token_id,
-          req,
-          reason: 'login',
-        });
-      } catch (error) {
-        loginWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
-        audit.record('email_auth_code_send_failed', {
-          actorUsername: freshAccount.username,
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          metadata: { reason: error?.message || 'unknown', flow: 'login' },
-        });
-        logger.warn('email_auth_code_send_failed', {
-          username: freshAccount.username,
-          error: error?.message || String(error),
-          flow: 'login',
-        });
-      }
-      return res.json({
-        ...challenge,
-        warning: loginWarning,
-      });
-    }
-
     const session = sessions.issueSession({
       account: freshAccount,
       deviceLabel: req.get('user-agent') || null,

@@ -188,14 +188,7 @@ async function main() {
     password: nextPassword,
   });
   if (!newLoginRes.response.ok) throw new Error(`Login after reset failed: ${newLoginRes.response.status}`);
-  if (!newLoginRes.payload?.pending_token) throw new Error('Login after reset missing pending token');
-
-  const loginAfterReset = await finalizePendingAuth({
-    baseUrl,
-    pendingToken: newLoginRes.payload.pending_token,
-    pendingPayload: newLoginRes.payload,
-  });
-  if (!loginAfterReset.authPayload?.access_token || !loginAfterReset.authPayload?.refresh_token) {
+  if (!newLoginRes.payload?.access_token || !newLoginRes.payload?.refresh_token) {
     throw new Error('Login after reset did not issue full session');
   }
 
