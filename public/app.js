@@ -3,7 +3,9 @@
 // ═══════════════ DURUM ═══════════════
 let socket;
 let currentUser     = null;
+let currentUserProfile = null;
 let currentAuthToken = null;
+let currentRefreshToken = null;
 let currentChannelId = null;
 let currentChannels  = [];
 let currentView      = 'channel'; // 'channel' | 'dm'
@@ -14,10 +16,17 @@ let dmTypingTimer    = null;
 let isDmTyping       = false;
 let authMode         = 'login';
 let registrationEnabled = true;
+let pendingResetToken = null;
+let currentAdminTab = 'users';
+let adminUsersSearchTimer = null;
+let currentPendingAuthChallenge = null;
+let isLoginBusy = false;
 const typingUsers    = new Set();
 const dmNotifCounts  = {};        // username → unread count
 const AUTH_TOKEN_KEY = 'sesappAuthToken';
+const REFRESH_TOKEN_KEY = 'sesappRefreshToken';
 const LAST_CHANNEL_ID_KEY = 'sesappLastChannelId';
+let refreshSessionPromise = null;
 
 // Müzik
 let audioUnlocked   = false;
@@ -38,12 +47,14 @@ let isMuted           = false;
 const peerConnections = new Map(); // socketId → RTCPeerConnection
 const mutedPeers      = new Set();
 const voicePeerIds    = new Map(); // socketId → username
+const voicePeerDebug  = new Map(); // socketId → connection diagnostics
 const locallyMuted    = new Set(); // username → kendi tarafından susturulmuş
 const peerVolumes     = {};        // username → 0-1
 const audioAnalysers  = new Map(); // socketId|'local' → AnalyserNode
 const pendingVoiceCandidates = new Map(); // socketId → RTCIceCandidateInit[]
 const peerDisconnectTimers   = new Map(); // socketId → timeoutId
 let reconnectVoiceJoinTimer  = null;
+let latestVoiceRoomsState    = {};
 
 function syncPeerAudioElement(peerId) {
   const audio = document.getElementById(`audio-${peerId}`);
@@ -63,6 +74,162 @@ function tryPlayAllPeerAudioElements() {
     const p = el.play?.();
     if (p && typeof p.catch === 'function') p.catch(() => {});
   }
+}
+
+function getVoicePeerDebug(peerId) {
+  return voicePeerDebug.get(peerId) || null;
+}
+
+function getVoicePeerDebugForUsername(username) {
+  let selected = null;
+  for (const [peerId, mappedUsername] of voicePeerIds) {
+    if (mappedUsername !== username) continue;
+    const debug = getVoicePeerDebug(peerId);
+    if (!debug) continue;
+    if (!selected || (debug.updatedAt || 0) >= (selected.updatedAt || 0)) selected = debug;
+  }
+  return selected;
+}
+
+function setVoicePeerDebug(peerId, patch = {}) {
+  const next = {
+    ...getVoicePeerDebug(peerId),
+    ...patch,
+    peerId,
+    username: patch.username || voicePeerIds.get(peerId) || getVoicePeerDebug(peerId)?.username || null,
+    updatedAt: Date.now(),
+  };
+  voicePeerDebug.set(peerId, next);
+  if (next.username) updateVoicePeerUi(next.username);
+}
+
+function clearVoicePeerDebug(peerId) {
+  const username = voicePeerIds.get(peerId) || getVoicePeerDebug(peerId)?.username;
+  voicePeerDebug.delete(peerId);
+  if (username) updateVoicePeerUi(username);
+}
+
+function getVoicePeerStatusText(debug) {
+  if (!debug) return '';
+  if (debug.state === 'failed' || debug.iceState === 'failed') return 'baglanti yok';
+  if (debug.state === 'disconnected' || debug.iceState === 'disconnected') return 'kopuk';
+  if (debug.state === 'connecting' || debug.iceState === 'checking' || debug.iceState === 'new') return 'baglaniyor';
+  if (debug.state === 'connected' || debug.state === 'completed' || debug.iceState === 'connected' || debug.iceState === 'completed') {
+    const pathLabel = debug.path === 'relay' ? 'TURN' : debug.path === 'p2p' ? 'P2P' : 'bagli';
+    return Number.isFinite(debug.rttMs) ? `${pathLabel} ${Math.round(debug.rttMs)}ms` : pathLabel;
+  }
+  return debug.path === 'relay' ? 'TURN hazir' : 'bekliyor';
+}
+
+function getVoicePeerStatusClass(debug) {
+  if (!debug) return 'idle';
+  if (debug.state === 'failed' || debug.iceState === 'failed') return 'failed';
+  if (debug.state === 'disconnected' || debug.iceState === 'disconnected') return 'disconnected';
+  if (debug.state === 'connecting' || debug.iceState === 'checking' || debug.iceState === 'new') return 'connecting';
+  if (debug.state === 'connected' || debug.state === 'completed' || debug.iceState === 'connected' || debug.iceState === 'completed') {
+    return debug.path === 'relay' ? 'relay' : 'connected';
+  }
+  return 'idle';
+}
+
+function getVoicePeerStatusTitle(debug) {
+  if (!debug) return 'Henuz baglanti bilgisi yok.';
+  const parts = [];
+  if (debug.state) parts.push(`Peer: ${debug.state}`);
+  if (debug.iceState) parts.push(`ICE: ${debug.iceState}`);
+  if (debug.path === 'relay') parts.push('Yol: TURN relay');
+  else if (debug.path === 'p2p') parts.push('Yol: dogrudan P2P');
+  if (debug.candidateTypes) parts.push(`Aday: ${debug.candidateTypes}`);
+  if (Number.isFinite(debug.rttMs)) parts.push(`Ping: ${Math.round(debug.rttMs)}ms`);
+  return parts.join(' | ');
+}
+
+function isVoicePeerMuted(username) {
+  for (const [peerId, mappedUsername] of voicePeerIds) {
+    if (mappedUsername === username && mutedPeers.has(peerId)) return true;
+  }
+  return false;
+}
+
+function updateVoicePeerUi(username) {
+  if (!username) return;
+  const debug = getVoicePeerDebugForUsername(username);
+  const muted = isVoicePeerMuted(username);
+  document.querySelectorAll('.vc-member-item').forEach((li) => {
+    if (li.dataset.username !== username) return;
+    li.classList.toggle('vc-locally-muted', locallyMuted.has(username));
+
+    let status = li.querySelector('.vc-peer-status');
+    if (!status) {
+      status = document.createElement('span');
+      status.className = 'vc-peer-status';
+      li.querySelector('.vc-member-name')?.after(status);
+    }
+    status.textContent = getVoicePeerStatusText(debug);
+    status.className = `vc-peer-status state-${getVoicePeerStatusClass(debug)}`;
+    status.title = getVoicePeerStatusTitle(debug);
+
+    let icon = li.querySelector('.vc-muted-icon');
+    if (muted) {
+      if (!icon) {
+        icon = document.createElement('span');
+        icon.className = 'vc-muted-icon';
+        icon.textContent = '🔇';
+        li.append(icon);
+      }
+    } else {
+      icon?.remove();
+    }
+  });
+}
+
+function updateAllVoicePeerUi() {
+  const users = new Set([
+    ...Object.values(latestVoiceRoomsState).flat(),
+    ...voicePeerIds.values(),
+  ]);
+  users.forEach((username) => updateVoicePeerUi(username));
+}
+
+function summarizeSelectedCandidatePair(stats) {
+  let selectedPair = null;
+  for (const stat of stats.values()) {
+    if (stat.type === 'transport' && stat.selectedCandidatePairId && stats.get(stat.selectedCandidatePairId)) {
+      selectedPair = stats.get(stat.selectedCandidatePairId);
+      break;
+    }
+  }
+  if (!selectedPair) {
+    for (const stat of stats.values()) {
+      if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && (stat.nominated || stat.selected)) {
+        selectedPair = stat;
+        break;
+      }
+    }
+  }
+  if (!selectedPair) {
+    for (const stat of stats.values()) {
+      if (stat.type === 'candidate-pair' && stat.state === 'succeeded') {
+        selectedPair = stat;
+        break;
+      }
+    }
+  }
+  if (!selectedPair) return null;
+
+  const localCandidate = selectedPair.localCandidateId ? stats.get(selectedPair.localCandidateId) : null;
+  const remoteCandidate = selectedPair.remoteCandidateId ? stats.get(selectedPair.remoteCandidateId) : null;
+  const usesRelay = localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay';
+
+  return {
+    rttMs: selectedPair.currentRoundTripTime !== undefined
+      ? selectedPair.currentRoundTripTime * 1000
+      : null,
+    path: usesRelay ? 'relay' : (localCandidate || remoteCandidate ? 'p2p' : 'unknown'),
+    candidateTypes: [localCandidate?.candidateType, remoteCandidate?.candidateType]
+      .filter(Boolean)
+      .join('/'),
+  };
 }
 let reconnectScreenTimer     = null;
 let   speakingTimer   = null;
@@ -88,18 +255,44 @@ let clientConfigPromise = null;
 const $ = id => document.getElementById(id);
 
 const loginScreen    = $('login-screen');
+const loginCard      = loginScreen?.querySelector('.login-card');
 const loginForm      = $('login-form');
 const authSubtitle   = $('auth-subtitle');
 const authLoginTab   = $('auth-login-tab');
 const authRegisterTab= $('auth-register-tab');
+const usernameField  = $('username-field');
 const usernameInput  = $('username-input');
+const emailField     = $('email-field');
+const emailInput     = $('email-input');
+const passwordField  = $('password-field');
+const passwordInputLabel = $('password-input-label');
 const passwordInput  = $('password-input');
+const resetPasswordConfirmField = $('reset-password-confirm-field');
+const resetPasswordConfirmInput = $('reset-password-confirm-input');
 const inviteCodeField = $('invite-code-field');
 const inviteCodeInput = $('invite-code-input');
+const mfaCodeField = $('mfa-code-field');
+const mfaCodeInput = $('mfa-code-input');
+const mfaRecoveryField = $('mfa-recovery-field');
+const mfaRecoveryInput = $('mfa-recovery-input');
+const mfaEnrollPanel = $('mfa-enroll-panel');
+const mfaQrWrap = $('mfa-qr-wrap');
+const mfaSecretValue = $('mfa-secret-value');
+const mfaSecretCopyBtn = $('mfa-secret-copy-btn');
+const mfaRecoveryList = $('mfa-recovery-list');
+const mfaRecoverySavedCheck = $('mfa-recovery-saved-check');
+const mfaRecoveryCopyBtn = $('mfa-recovery-copy-btn');
+const mfaVerifyHelper = $('mfa-verify-helper');
+const mfaToggleRow = $('mfa-toggle-row');
+const mfaUseRecoveryBtn = $('mfa-use-recovery-btn');
+const mfaUseAppBtn = $('mfa-use-app-btn');
 const authHelperText = $('auth-helper-text');
 const loginError     = $('login-error');
+const forgotPasswordLink = $('forgot-password-link');
+const authBackLink   = $('auth-back-link');
 const appEl          = $('app');
 const connectionBanner = $('connection-banner');
+const emailReminderBanner = $('email-reminder-banner');
 const channelList    = $('channel-list');
 const dmUserList     = $('dm-user-list');
 const messagesEl     = $('messages-container');
@@ -150,7 +343,80 @@ const audioDeviceNote = $('audio-device-note');
 const pttKeyBtn = $('ptt-key-btn');
 const pttKeyDesc = $('ptt-key-desc');
 const pttKeyNote = $('ptt-key-note');
+const accountAvatarPreview = $('account-avatar-preview');
+const accountDisplayNamePreview = $('account-display-name-preview');
+const accountUsernamePreview = $('account-username-preview');
+const accountPendingDeleteBanner = $('account-pending-delete-banner');
+const accountUsernameInput = $('account-username-input');
+const accountDisplayNameInput = $('account-display-name-input');
+const accountDisplayNameSave = $('account-display-name-save');
+const accountProfileFeedback = $('account-profile-feedback');
+const accountPasswordForm = $('account-password-form');
+const accountCurrentPasswordInput = $('account-current-password-input');
+const accountNewPasswordInput = $('account-new-password-input');
+const accountNewPasswordConfirmInput = $('account-new-password-confirm-input');
+const accountPasswordFeedback = $('account-password-feedback');
+const accountEmailValue = $('account-email-value');
+const accountEmailStatus = $('account-email-status');
+const accountEmailRefreshBtn = $('account-email-refresh-btn');
+const accountEmailWarning = $('account-email-warning');
+const accountEmailForm = $('account-email-form');
+const accountEmailInput = $('account-email-input');
+const accountEmailPasswordInput = $('account-email-password-input');
+const accountEmailFeedback = $('account-email-feedback');
+const account2faStatus = $('account-2fa-status');
+const account2faDesc = $('account-2fa-desc');
+const accountRecoveryForm = $('account-recovery-form');
+const accountRecoveryPasswordInput = $('account-recovery-password-input');
+const accountRecoveryResult = $('account-recovery-result');
+const accountRecoveryCodes = $('account-recovery-codes');
+const accountRecoveryCopyBtn = $('account-recovery-copy-btn');
+const accountRecoveryFeedback = $('account-recovery-feedback');
+const accountSessionsRefreshBtn = $('account-sessions-refresh-btn');
+const accountLogoutAllBtn = $('account-logout-all-btn');
+const accountSessionsEmpty = $('account-sessions-empty');
+const accountSessionsList = $('account-sessions-list');
+const accountSessionsFeedback = $('account-sessions-feedback');
+const accountDeleteDetails = $('account-delete-details');
+const accountDeleteForm = $('account-delete-form');
+const accountDeletePasswordInput = $('account-delete-password-input');
+const accountDeletePhraseInput = $('account-delete-phrase-input');
+const accountDeleteFeedback = $('account-delete-feedback');
+const accountAdminEntry = $('account-admin-entry');
+const accountAdminOpenBtn = $('account-admin-open-btn');
 const defaultConnectionBannerText = connectionBanner?.textContent || 'Bağlantı kesildi — yeniden bağlanılıyor...';
+const adminAppEl = $('admin-app');
+const adminUserDisplay = $('admin-user-display');
+const adminUserRole = $('admin-user-role');
+const adminLogoutBtn = $('admin-logout-btn');
+const adminGlobalFeedback = $('admin-global-feedback');
+const adminUsersPanel = $('admin-users-panel');
+const adminInvitesPanel = $('admin-invites-panel');
+const adminAuditPanel = $('admin-audit-panel');
+const adminUsersRefreshBtn = $('admin-users-refresh-btn');
+const adminUserSearch = $('admin-user-search');
+const adminUserStatusFilter = $('admin-user-status-filter');
+const adminUsersEmpty = $('admin-users-empty');
+const adminUsersList = $('admin-users-list');
+const adminInvitesRefreshBtn = $('admin-invites-refresh-btn');
+const adminInviteForm = $('admin-invite-form');
+const adminInviteLabel = $('admin-invite-label');
+const adminInviteMaxUses = $('admin-invite-max-uses');
+const adminInviteTtlHours = $('admin-invite-ttl-hours');
+const adminInviteCreateBtn = $('admin-invite-create-btn');
+const adminInviteResult = $('admin-invite-result');
+const adminInviteCodeValue = $('admin-invite-code-value');
+const adminInviteCopyBtn = $('admin-invite-copy-btn');
+const adminInvitesEmpty = $('admin-invites-empty');
+const adminInvitesList = $('admin-invites-list');
+const adminAuditRefreshBtn = $('admin-audit-refresh-btn');
+const adminAuditEvent = $('admin-audit-event');
+const adminAuditActor = $('admin-audit-actor');
+const adminAuditSince = $('admin-audit-since');
+const adminAuditUntil = $('admin-audit-until');
+const adminAuditLimit = $('admin-audit-limit');
+const adminAuditEmpty = $('admin-audit-empty');
+const adminAuditList = $('admin-audit-list');
 const isElectronApp = navigator.userAgent.toLowerCase().includes('electron');
 const electronAPI = globalThis.electronAPI || null;
 const voiceSettings = globalThis.SesAppVoiceSettings || null;
@@ -165,6 +431,12 @@ const clientSessionId = (() => {
   return id;
 })();
 
+const authRoutePath = window.location.pathname.replace(/\/+$/, '') || '/';
+const isResetPasswordRoute = authRoutePath === '/reset-password';
+const isConfirmEmailRoute = authRoutePath === '/confirm-email';
+const isAdminRoute = authRoutePath === '/admin';
+const authRouteParams = new URLSearchParams(window.location.search);
+
 // ═══════════════ YARDIMCI FONKSİYONLAR ═══════════════
 function usernameToHue(u) {
   let h = 0;
@@ -175,47 +447,292 @@ function avatarColor(u) { return `hsl(${usernameToHue(u)},65%,55%)`; }
 
 function setAuthMode(mode) {
   if (mode === 'register' && !registrationEnabled) mode = 'login';
-  authMode = mode === 'register' ? 'register' : 'login';
+  if (!['login', 'register', 'forgot', 'reset', 'mfa-enroll', 'mfa-verify', 'mfa-recovery'].includes(mode)) mode = 'login';
+  authMode = mode;
+
   const isRegister = authMode === 'register';
-  authLoginTab?.classList.toggle('active', !isRegister);
+  const isForgot = authMode === 'forgot';
+  const isReset = authMode === 'reset';
+  const isLogin = authMode === 'login';
+  const isMfaEnroll = authMode === 'mfa-enroll';
+  const isMfaVerify = authMode === 'mfa-verify';
+  const isMfaRecovery = authMode === 'mfa-recovery';
+  const isMfa = isMfaEnroll || isMfaVerify || isMfaRecovery;
+
+  loginCard?.classList.toggle('is-mfa', isMfa);
+
+  authLoginTab?.classList.toggle('active', isLogin);
   authRegisterTab?.classList.toggle('active', isRegister);
+  $('auth-mode-tabs')?.classList.toggle('hidden', isForgot || isReset || isMfa);
+  usernameField?.classList.toggle('hidden', isForgot || isReset || isMfa);
+  emailField?.classList.toggle('hidden', !(isRegister || isForgot));
+  passwordField?.classList.toggle('hidden', isForgot || isMfa);
+  resetPasswordConfirmField?.classList.toggle('hidden', !isReset);
   inviteCodeField?.classList.toggle('hidden', !isRegister);
+  mfaCodeField?.classList.toggle('hidden', !(isMfaEnroll || isMfaVerify));
+  mfaRecoveryField?.classList.toggle('hidden', !isMfaRecovery);
+  mfaEnrollPanel?.classList.toggle('hidden', !isMfaEnroll);
+  mfaVerifyHelper?.classList.toggle('hidden', !isMfa);
+  mfaToggleRow?.classList.toggle('hidden', !(isMfaVerify || isMfaRecovery));
+  mfaUseRecoveryBtn?.classList.toggle('hidden', !isMfaVerify);
+  mfaUseAppBtn?.classList.toggle('hidden', !isMfaRecovery);
+  forgotPasswordLink?.classList.toggle('hidden', !isLogin);
+  authBackLink?.classList.toggle('hidden', isLogin || isRegister);
+
   if (authSubtitle) {
     authSubtitle.textContent = isRegister
       ? 'Yeni hesabını oluştur ve kendi şifrenle giriş yap'
-      : 'Hesabınla giriş yap ve kaldığın yerden devam et';
+      : isForgot
+        ? 'Sifirlama baglantisi e-postana gonderilsin'
+        : isReset
+          ? 'Yeni sifreni belirle ve tekrar giris yap'
+          : isMfaEnroll
+            ? 'Iki adimli dogrulama kurulumu gerekiyor'
+            : isMfaRecovery
+              ? 'Kurtarma koduyla giris yap'
+              : isMfaVerify
+                ? 'Authenticator uygulamandaki kodu gir'
+          : 'Hesabınla giriş yap ve kaldığın yerden devam et';
   }
   if (authHelperText) {
     authHelperText.textContent = isRegister
-      ? 'Kayıt için sunucu davet kodu gerekir. Bu kod eski ortak şifreyle aynıdır.'
-      : 'Kayıt olurken seçtiğin kullanıcı adı ve şifreyle giriş yap.';
+      ? 'Kayıt için sunucu davet kodu gerekir. E-postani dogrulayinca sifreni de kurtarabilirsin.'
+      : isForgot
+        ? 'Dogrulanmis bir e-posta varsa sifirlama linki gonderilir.'
+        : isReset
+          ? 'Yeni sifren en az 8 karakter olmali.'
+          : isMfaEnroll
+            ? 'QR kodu tarayip 6 haneli kodu asagidan dogrula. Kurtarma kodlarini kaydetmeden devam etme.'
+            : isMfaRecovery
+              ? 'Authenticator uygulamana erisemiyorsan tek kullanimlik kurtarma kodunu gir.'
+              : isMfaVerify
+                ? 'Kod 30 saniyede bir yenilenir. Gerekirse kurtarma koduna gecebilirsin.'
+          : 'Kayıt olurken seçtiğin kullanıcı adı ve şifreyle giriş yap.';
   }
-  if (passwordInput) {
+  if (passwordInput && passwordInputLabel) {
     passwordInput.autocomplete = isRegister ? 'new-password' : 'current-password';
-    passwordInput.placeholder = isRegister ? 'kendine bir şifre belirle...' : 'şifreni gir...';
+    passwordInputLabel.textContent = isReset ? 'Yeni Şifre' : 'Şifre';
+    passwordInput.autocomplete = isRegister || isReset ? 'new-password' : 'current-password';
+    passwordInput.placeholder = isRegister || isReset ? 'kendine bir şifre belirle...' : 'şifreni gir...';
   }
   if (inviteCodeInput && !isRegister) inviteCodeInput.value = '';
-  $('join-btn').textContent = isRegister ? 'Hesap Oluştur' : 'Giriş Yap';
+  if (resetPasswordConfirmInput && !isReset) resetPasswordConfirmInput.value = '';
+  if (emailInput && !isRegister && !isForgot) emailInput.value = '';
+  if (mfaCodeInput && !isMfaEnroll && !isMfaVerify) mfaCodeInput.value = '';
+  if (mfaRecoveryInput && !isMfaRecovery) mfaRecoveryInput.value = '';
+  $('join-btn').textContent = isRegister
+    ? 'Hesap Oluştur'
+    : isForgot
+      ? 'Sifirlama Linki Gonder'
+      : isReset
+        ? 'Sifreyi Yenile'
+        : isMfaEnroll
+          ? 'Kurulumu Tamamla'
+          : isMfaRecovery
+            ? 'Kurtarma Koduyla Gir'
+            : isMfaVerify
+              ? 'Dogrula'
+        : 'Giriş Yap';
+  updatePendingAuthUi();
+}
+
+function setLoginStatus(message = '', type = 'error') {
+  if (!loginError) return;
+  loginError.textContent = message;
+  loginError.classList.toggle('success', type === 'success');
 }
 
 function setLoginBusy(isBusy) {
+  isLoginBusy = isBusy;
   const joinBtn = $('join-btn');
   if (joinBtn) joinBtn.disabled = isBusy;
   usernameInput.disabled = isBusy;
+  if (emailInput) emailInput.disabled = isBusy;
   passwordInput.disabled = isBusy;
+  if (resetPasswordConfirmInput) resetPasswordConfirmInput.disabled = isBusy;
   if (inviteCodeInput) inviteCodeInput.disabled = isBusy;
+  if (mfaCodeInput) mfaCodeInput.disabled = isBusy;
+  if (mfaRecoveryInput) mfaRecoveryInput.disabled = isBusy;
+  if (mfaRecoverySavedCheck) mfaRecoverySavedCheck.disabled = isBusy;
+  if (mfaSecretCopyBtn) mfaSecretCopyBtn.disabled = isBusy;
+  if (mfaRecoveryCopyBtn) mfaRecoveryCopyBtn.disabled = isBusy;
+  if (mfaUseRecoveryBtn) mfaUseRecoveryBtn.disabled = isBusy;
+  if (mfaUseAppBtn) mfaUseAppBtn.disabled = isBusy;
+  if (authBackLink) authBackLink.disabled = isBusy;
+  updatePendingAuthUi();
+}
+
+function clearPendingAuthChallenge() {
+  currentPendingAuthChallenge = null;
+  if (mfaQrWrap) mfaQrWrap.innerHTML = '';
+  if (mfaSecretValue) mfaSecretValue.textContent = '—';
+  if (mfaRecoveryList) mfaRecoveryList.innerHTML = '';
+  if (mfaRecoverySavedCheck) mfaRecoverySavedCheck.checked = false;
+  if (mfaCodeInput) mfaCodeInput.value = '';
+  if (mfaRecoveryInput) mfaRecoveryInput.value = '';
+}
+
+function renderRecoveryCodeGrid(container, codes = []) {
+  if (!container) return;
+  container.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  for (const code of codes) {
+    const item = document.createElement('div');
+    item.className = 'mfa-recovery-item';
+    item.textContent = code;
+    fragment.append(item);
+  }
+  container.append(fragment);
+}
+
+function updatePendingAuthUi() {
+  const joinBtn = $('join-btn');
+  const challenge = currentPendingAuthChallenge;
+  if (mfaQrWrap && authMode === 'mfa-enroll') {
+    mfaQrWrap.innerHTML = challenge?.qrSvg || '';
+  }
+  if (mfaSecretValue && authMode === 'mfa-enroll') {
+    mfaSecretValue.textContent = challenge?.secretB32 || '—';
+  }
+  if (mfaRecoveryList && authMode === 'mfa-enroll') {
+    renderRecoveryCodeGrid(mfaRecoveryList, challenge?.recoveryCodes || []);
+  }
+  if (mfaVerifyHelper) {
+    mfaVerifyHelper.textContent = authMode === 'mfa-recovery'
+      ? 'Kaydettigin tek kullanimlik kurtarma kodunu gir.'
+      : authMode === 'mfa-enroll'
+        ? 'Uygulamadaki ilk 6 haneli kodu girerek kurulumu tamamla.'
+        : 'Authenticator uygulamandaki 6 haneli kodu gir. Uygulamaya erisemiyorsan kurtarma kodunu kullan.';
+  }
+  if (!joinBtn) return;
+  if (authMode === 'mfa-enroll') {
+    joinBtn.disabled = isLoginBusy || !challenge?.token || !challenge?.secretB32 || !mfaRecoverySavedCheck?.checked;
+  } else if (authMode === 'mfa-verify') {
+    joinBtn.disabled = isLoginBusy || !challenge?.token;
+  } else if (authMode === 'mfa-recovery') {
+    joinBtn.disabled = isLoginBusy || !challenge?.token;
+  }
+}
+
+function extractPendingAuthChallenge(payload = {}) {
+  const pendingToken = typeof payload.pending_token === 'string' ? payload.pending_token : '';
+  if (!pendingToken) return null;
+  const requires = Array.isArray(payload.requires) ? payload.requires : [];
+  const requirement = requires[0] || '';
+  if (requirement === 'totp_enroll') return { token: pendingToken, step: 'enroll', user: payload.user || null };
+  if (requirement === 'totp_verify') return { token: pendingToken, step: 'verify', user: payload.user || null };
+  if (requirement === 'totp_recovery') return { token: pendingToken, step: 'recovery', user: payload.user || null };
+  return null;
+}
+
+async function requestPendingJson(url, { method = 'POST', body } = {}) {
+  if (!currentPendingAuthChallenge?.token) {
+    throw new Error('Dogrulama oturumu bulunamadi. Tekrar giris yap.');
+  }
+  return requestJson(url, {
+    method,
+    body,
+    headers: { Authorization: `Bearer ${currentPendingAuthChallenge.token}` },
+    authorize: false,
+    retryAuth: false,
+  });
+}
+
+async function beginPendingAuthFlow(payload = {}) {
+  const pending = extractPendingAuthChallenge(payload);
+  if (!pending) return false;
+
+  currentPendingAuthChallenge = pending;
+
+  if (pending.step === 'enroll') {
+    const enrollPayload = await requestPendingJson('/api/auth/2fa/enroll');
+    currentPendingAuthChallenge = {
+      ...currentPendingAuthChallenge,
+      secretB32: enrollPayload.secret_b32,
+      otpauthUrl: enrollPayload.otpauth_url,
+      qrSvg: enrollPayload.qr_svg,
+      recoveryCodes: enrollPayload.recovery_codes || [],
+    };
+    if (mfaRecoverySavedCheck) mfaRecoverySavedCheck.checked = false;
+    setAuthMode('mfa-enroll');
+  } else if (pending.step === 'recovery') {
+    setAuthMode('mfa-recovery');
+  } else {
+    setAuthMode('mfa-verify');
+  }
+
+  if (payload?.warning) {
+    setLoginStatus(payload.warning, 'error');
+  } else {
+    setLoginStatus('', 'error');
+  }
+  updatePendingAuthUi();
+  return true;
+}
+
+function formatRecoveryCodes(codes = []) {
+  return codes.filter(Boolean).join('\n');
+}
+
+async function copyPlainText(value, successMessage, failureMessage = 'Kopyalama başarısız oldu.') {
+  try {
+    await navigator.clipboard.writeText(value);
+    setLoginStatus(successMessage, 'success');
+    return true;
+  } catch {
+    setLoginStatus(failureMessage, 'error');
+    return false;
+  }
 }
 
 function getStoredAuthToken() {
   return localStorage.getItem(AUTH_TOKEN_KEY) || '';
 }
 
-function storeAuthToken(token) {
-  if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+function getStoredRefreshToken() {
+  return localStorage.getItem(REFRESH_TOKEN_KEY) || '';
 }
 
 function clearStoredAuth() {
   localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+function storeRefreshToken(token) {
+  if (token) localStorage.setItem(REFRESH_TOKEN_KEY, token);
+}
+
+function extractSessionTokens(payload = {}) {
+  return {
+    accessToken: payload.access_token || payload.token || null,
+    refreshToken: payload.refresh_token ?? null,
+  };
+}
+
+function applySessionTokens({ accessToken = null, refreshToken, clearLegacyAccess = false } = {}) {
+  if (accessToken) currentAuthToken = accessToken;
+  if (refreshToken !== undefined) {
+    currentRefreshToken = refreshToken || null;
+    if (currentRefreshToken) storeRefreshToken(currentRefreshToken);
+    else localStorage.removeItem(REFRESH_TOKEN_KEY);
+  }
+  if (clearLegacyAccess) localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+const FATAL_AUTH_ERROR_CODES = new Set([
+  'invalid_session',
+  'revoked_session',
+  'missing_account',
+  'stale_token',
+  'account_disabled',
+  'account_locked',
+  'refresh_reuse_detected',
+  'stale_session',
+  'account_unavailable',
+]);
+
+function isFatalAuthErrorCode(code) {
+  return FATAL_AUTH_ERROR_CODES.has(code);
 }
 
 function getAuthHeaders(extra = {}) {
@@ -224,18 +741,533 @@ function getAuthHeaders(extra = {}) {
   return headers;
 }
 
+function applyCurrentUserProfile(user) {
+  currentUserProfile = user ? { ...user } : null;
+  currentUser = currentUserProfile?.username || null;
+
+  const displayName = currentUserProfile?.displayName || currentUser || '—';
+  const usernameLabel = currentUser ? `@${currentUser}` : '@—';
+
+  if (selfAvatar) {
+    selfAvatar.textContent = displayName[0]?.toUpperCase?.() || '?';
+    selfAvatar.style.background = avatarColor(currentUser || displayName);
+  }
+  if (selfUsername) selfUsername.textContent = displayName;
+
+  if (accountAvatarPreview) {
+    accountAvatarPreview.textContent = displayName[0]?.toUpperCase?.() || '?';
+    accountAvatarPreview.style.background = avatarColor(currentUser || displayName);
+  }
+  if (accountDisplayNamePreview) accountDisplayNamePreview.textContent = displayName;
+  if (accountUsernamePreview) accountUsernamePreview.textContent = usernameLabel;
+  if (accountUsernameInput) accountUsernameInput.value = currentUser || '';
+  if (accountDisplayNameInput && document.activeElement !== accountDisplayNameInput) {
+    accountDisplayNameInput.value = currentUserProfile?.displayName || currentUser || '';
+  }
+  if (accountEmailValue) {
+    accountEmailValue.textContent = currentUserProfile?.email || 'Henüz eklenmedi';
+  }
+  if (accountEmailStatus) {
+    if (currentUserProfile?.emailPending) {
+      accountEmailStatus.textContent = `Bekleyen değişiklik: ${currentUserProfile.emailPending}`;
+    } else if (currentUserProfile?.email) {
+      accountEmailStatus.textContent = currentUserProfile.emailVerifiedAt
+        ? 'E-posta doğrulanmış.'
+        : 'E-posta kayitli ama henuz dogrulanmamis.';
+    } else {
+      accountEmailStatus.textContent = 'Sifremi unuttum akisi icin dogrulanmis e-posta eklemelisin.';
+    }
+  }
+  if (accountEmailInput && document.activeElement !== accountEmailInput) {
+    accountEmailInput.value = currentUserProfile?.emailPending || currentUserProfile?.email || '';
+  }
+  if (accountEmailWarning) {
+    accountEmailWarning.classList.toggle('hidden', Boolean(currentUserProfile?.email || currentUserProfile?.emailPending));
+  }
+  if (accountPendingDeleteBanner) {
+    accountPendingDeleteBanner.classList.toggle('hidden', !currentUserProfile?.pendingDeleteAt);
+  }
+  if (emailReminderBanner) {
+    emailReminderBanner.classList.toggle('hidden', Boolean(currentUserProfile?.email || currentUserProfile?.emailPending) || !currentUser);
+  }
+  if (account2faStatus) {
+    account2faStatus.textContent = currentUserProfile?.totpEnabledAt ? 'Aktif' : 'Kurulum Bekliyor';
+  }
+  if (account2faDesc) {
+    account2faDesc.textContent = currentUserProfile?.totpEnabledAt
+      ? 'Authenticator uygulaman ve kurtarma kodların hesabını korur.'
+      : 'Bu hesap tekrar girişte authenticator kurulumu isteyecek.';
+  }
+  updateAdminAccessUi();
+}
+
+function setSettingsFeedback(el, message = '', type = '') {
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove('success', 'error');
+  if (type) el.classList.add(type);
+}
+
+function clearAccountFeedback() {
+  setSettingsFeedback(accountProfileFeedback);
+  setSettingsFeedback(accountPasswordFeedback);
+  setSettingsFeedback(accountEmailFeedback);
+  setSettingsFeedback(accountRecoveryFeedback);
+  setSettingsFeedback(accountSessionsFeedback);
+  setSettingsFeedback(accountDeleteFeedback);
+}
+
+function formatSettingsDate(timestamp) {
+  if (!Number.isFinite(timestamp)) return '—';
+  return new Date(timestamp).toLocaleString('tr-TR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function setAdminFeedback(message = '', type = '') {
+  if (!adminGlobalFeedback) return;
+  adminGlobalFeedback.textContent = message;
+  adminGlobalFeedback.classList.remove('hidden', 'success', 'error');
+  if (!message) {
+    adminGlobalFeedback.classList.add('hidden');
+    return;
+  }
+  if (type) adminGlobalFeedback.classList.add(type);
+}
+
+function parseDateTimeLocalValue(value) {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function updateAdminAccessUi() {
+  const isAdmin = currentUserProfile?.role === 'admin';
+  if (accountAdminEntry) accountAdminEntry.classList.toggle('hidden', !isAdmin);
+  if (adminUserDisplay) {
+    adminUserDisplay.textContent = currentUserProfile?.displayName || currentUserProfile?.username || '—';
+  }
+  if (adminUserRole) {
+    adminUserRole.textContent = isAdmin ? 'admin' : (currentUserProfile?.role || 'user');
+  }
+}
+
+function ensureAdminRouteAccess() {
+  if (!isAdminRoute) return true;
+  if (currentUserProfile?.role === 'admin') return true;
+  sessionStorage.setItem('sesappLoginError', 'Bu alana erişmek için yönetici olman gerekiyor.');
+  window.location.replace('/');
+  return false;
+}
+
+function showAdminShell() {
+  if (!adminAppEl) return;
+  loginScreen.style.display = 'none';
+  appEl.classList.add('hidden');
+  adminAppEl.classList.remove('hidden');
+  updateAdminAccessUi();
+}
+
+function hideAdminShell() {
+  if (!adminAppEl) return;
+  adminAppEl.classList.add('hidden');
+}
+
+function setAdminTab(tab) {
+  currentAdminTab = ['users', 'invites', 'audit'].includes(tab) ? tab : 'users';
+  document.querySelectorAll('.admin-tab-btn[data-admin-tab]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.adminTab === currentAdminTab);
+  });
+  adminUsersPanel?.classList.toggle('hidden', currentAdminTab !== 'users');
+  adminInvitesPanel?.classList.toggle('hidden', currentAdminTab !== 'invites');
+  adminAuditPanel?.classList.toggle('hidden', currentAdminTab !== 'audit');
+}
+
+function renderAdminUsers(items = []) {
+  if (!adminUsersList || !adminUsersEmpty) return;
+  adminUsersList.innerHTML = '';
+  adminUsersEmpty.classList.toggle('hidden', items.length > 0);
+
+  for (const item of items) {
+    const card = document.createElement('article');
+    card.className = 'admin-card';
+    card.dataset.username = item.username;
+
+    const head = document.createElement('div');
+    head.className = 'admin-card-head';
+
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'admin-card-title';
+    title.textContent = item.display_name || item.username;
+    const subtitle = document.createElement('div');
+    subtitle.className = 'admin-card-subtitle';
+    subtitle.textContent = `@${item.username}${item.email ? ` • ${item.email}` : ''}`;
+    titleWrap.append(title, subtitle);
+
+    const badges = document.createElement('div');
+    badges.className = 'admin-card-meta';
+    const roleBadge = document.createElement('span');
+    roleBadge.className = `admin-badge ${item.role === 'admin' ? 'admin' : ''}`.trim();
+    roleBadge.textContent = item.role === 'admin' ? 'Admin' : 'User';
+    badges.append(roleBadge);
+    if (item.disabled_at) {
+      const disabledBadge = document.createElement('span');
+      disabledBadge.className = 'admin-badge disabled';
+      disabledBadge.textContent = 'Devre dışı';
+      badges.append(disabledBadge);
+    }
+    if (item.pending_delete_at) {
+      const pendingBadge = document.createElement('span');
+      pendingBadge.className = 'admin-badge pending';
+      pendingBadge.textContent = 'Silinmeyi bekliyor';
+      badges.append(pendingBadge);
+    }
+    const mfaBadge = document.createElement('span');
+    mfaBadge.className = `admin-badge ${item.totp_enabled_at ? 'mfa' : 'pending'}`.trim();
+    mfaBadge.textContent = item.totp_enabled_at ? '2FA aktif' : '2FA bekliyor';
+    badges.append(mfaBadge);
+
+    head.append(titleWrap, badges);
+
+    const facts = document.createElement('div');
+    facts.className = 'admin-card-facts';
+    const created = document.createElement('div');
+    created.textContent = `Açılış: ${formatSettingsDate(item.created_at)}`;
+    const lastLogin = document.createElement('div');
+    lastLogin.textContent = `Son giriş: ${formatSettingsDate(item.last_login_at)}`;
+    facts.append(created, lastLogin);
+
+    const actions = document.createElement('div');
+    actions.className = 'admin-card-actions';
+
+    const toggleDisableBtn = document.createElement('button');
+    toggleDisableBtn.type = 'button';
+    toggleDisableBtn.className = item.disabled_at ? 'admin-secondary-btn' : 'admin-danger-btn';
+    toggleDisableBtn.dataset.action = item.disabled_at ? 'enable' : 'disable';
+    toggleDisableBtn.dataset.username = item.username;
+    toggleDisableBtn.textContent = item.disabled_at ? 'Aktif Et' : 'Devre Dışı Bırak';
+
+    const toggleRoleBtn = document.createElement('button');
+    toggleRoleBtn.type = 'button';
+    toggleRoleBtn.className = 'admin-secondary-btn';
+    toggleRoleBtn.dataset.action = 'role';
+    toggleRoleBtn.dataset.username = item.username;
+    toggleRoleBtn.dataset.role = item.role === 'admin' ? 'user' : 'admin';
+    toggleRoleBtn.textContent = item.role === 'admin' ? 'User Yap' : 'Admin Yap';
+
+    const logoutAllBtn = document.createElement('button');
+    logoutAllBtn.type = 'button';
+    logoutAllBtn.className = 'admin-secondary-btn';
+    logoutAllBtn.dataset.action = 'logout-all';
+    logoutAllBtn.dataset.username = item.username;
+    logoutAllBtn.textContent = 'Tüm Oturumları Kapat';
+
+    const emailBtn = document.createElement('button');
+    emailBtn.type = 'button';
+    emailBtn.className = 'admin-secondary-btn';
+    emailBtn.dataset.action = 'email-set';
+    emailBtn.dataset.username = item.username;
+    emailBtn.textContent = 'E-posta Ata';
+
+    const totpResetBtn = document.createElement('button');
+    totpResetBtn.type = 'button';
+    totpResetBtn.className = 'admin-secondary-btn';
+    totpResetBtn.dataset.action = 'totp-reset';
+    totpResetBtn.dataset.username = item.username;
+    totpResetBtn.textContent = '2FA Sıfırla';
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'admin-danger-btn';
+    deleteBtn.dataset.action = 'delete';
+    deleteBtn.dataset.username = item.username;
+    deleteBtn.textContent = 'Silme Başlat';
+
+    actions.append(toggleDisableBtn, toggleRoleBtn, logoutAllBtn, emailBtn, totpResetBtn, deleteBtn);
+    card.append(head, facts, actions);
+    adminUsersList.append(card);
+  }
+}
+
+function renderAdminInvites(items = []) {
+  if (!adminInvitesList || !adminInvitesEmpty) return;
+  adminInvitesList.innerHTML = '';
+  adminInvitesEmpty.classList.toggle('hidden', items.length > 0);
+
+  for (const item of items) {
+    const card = document.createElement('article');
+    card.className = 'admin-card';
+    card.dataset.inviteId = item.id;
+
+    const head = document.createElement('div');
+    head.className = 'admin-card-head';
+
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'admin-card-title';
+    title.textContent = item.label || 'Adsız davet';
+    const subtitle = document.createElement('div');
+    subtitle.className = 'admin-card-subtitle';
+    subtitle.textContent = `Oluşturan: @${item.created_by}`;
+    titleWrap.append(title, subtitle);
+
+    const badges = document.createElement('div');
+    badges.className = 'admin-card-meta';
+    const usageBadge = document.createElement('span');
+    usageBadge.className = 'admin-badge';
+    usageBadge.textContent = `${item.uses_remaining}/${item.max_uses} kullanım kaldı`;
+    badges.append(usageBadge);
+    if (item.revoked_at) {
+      const revokedBadge = document.createElement('span');
+      revokedBadge.className = 'admin-badge disabled';
+      revokedBadge.textContent = 'İptal edildi';
+      badges.append(revokedBadge);
+    } else if (item.expires_at && item.expires_at <= Date.now()) {
+      const expiredBadge = document.createElement('span');
+      expiredBadge.className = 'admin-badge pending';
+      expiredBadge.textContent = 'Süresi doldu';
+      badges.append(expiredBadge);
+    }
+
+    head.append(titleWrap, badges);
+
+    const facts = document.createElement('div');
+    facts.className = 'admin-card-facts';
+    const created = document.createElement('div');
+    created.textContent = `Oluşturuldu: ${formatSettingsDate(item.created_at)}`;
+    const expires = document.createElement('div');
+    expires.textContent = `Bitiş: ${item.expires_at ? formatSettingsDate(item.expires_at) : 'Süresiz'}`;
+    facts.append(created, expires);
+
+    card.append(head, facts);
+
+    const canRevoke = !item.revoked_at && item.uses_remaining > 0;
+    if (canRevoke) {
+      const actions = document.createElement('div');
+      actions.className = 'admin-card-actions';
+      const revokeBtn = document.createElement('button');
+      revokeBtn.type = 'button';
+      revokeBtn.className = 'admin-danger-btn';
+      revokeBtn.dataset.action = 'revoke';
+      revokeBtn.dataset.inviteId = item.id;
+      revokeBtn.textContent = 'İptal Et';
+      actions.append(revokeBtn);
+      card.append(actions);
+    }
+
+    adminInvitesList.append(card);
+  }
+}
+
+function renderAdminAudit(items = []) {
+  if (!adminAuditList || !adminAuditEmpty) return;
+  adminAuditList.innerHTML = '';
+  adminAuditEmpty.classList.toggle('hidden', items.length > 0);
+
+  for (const item of items) {
+    const row = document.createElement('article');
+    row.className = 'admin-audit-item';
+
+    const top = document.createElement('div');
+    top.className = 'admin-audit-top';
+
+    const event = document.createElement('div');
+    event.className = 'admin-audit-event';
+    event.textContent = item.event || 'unknown_event';
+
+    const time = document.createElement('div');
+    time.className = 'admin-audit-time';
+    time.textContent = formatSettingsDate(item.ts);
+
+    top.append(event, time);
+
+    const meta = document.createElement('div');
+    meta.className = 'admin-audit-meta';
+    meta.textContent = [
+      `Actor: ${item.actor_username || '—'}`,
+      `Target: ${item.target_username || '—'}`,
+      `IP: ${item.ip || '—'}`,
+    ].join(' • ');
+
+    row.append(top, meta);
+
+    if (item.metadata_json) {
+      const json = document.createElement('pre');
+      json.className = 'admin-audit-json';
+      json.textContent = item.metadata_json;
+      row.append(json);
+    }
+
+    adminAuditList.append(row);
+  }
+}
+
+async function loadAdminUsers({ silent = false } = {}) {
+  const search = adminUserSearch?.value?.trim() || '';
+  const disabled = adminUserStatusFilter?.value || '';
+  const params = new URLSearchParams();
+  if (search) params.set('q', search);
+  if (disabled) params.set('disabled', disabled);
+  const payload = await authorizedFetchJson(`/api/admin/users?${params.toString()}`);
+  renderAdminUsers(payload.items || []);
+  if (!silent) setAdminFeedback('Kullanıcı listesi güncellendi.', 'success');
+  return payload.items || [];
+}
+
+async function loadAdminInvites({ silent = false } = {}) {
+  const payload = await authorizedFetchJson('/api/admin/invites');
+  renderAdminInvites(payload.items || []);
+  if (!silent) setAdminFeedback('Davet listesi güncellendi.', 'success');
+  return payload.items || [];
+}
+
+async function loadAdminAudit({ silent = false } = {}) {
+  const params = new URLSearchParams();
+  const event = adminAuditEvent?.value?.trim() || '';
+  const actor = adminAuditActor?.value?.trim() || '';
+  const since = parseDateTimeLocalValue(adminAuditSince?.value || '');
+  const until = parseDateTimeLocalValue(adminAuditUntil?.value || '');
+  const limit = Math.min(Math.max(Number(adminAuditLimit?.value) || 100, 1), 500);
+  if (event) params.set('event', event);
+  if (actor) params.set('actor', actor);
+  if (Number.isFinite(since)) params.set('since', String(since));
+  if (Number.isFinite(until)) params.set('until', String(until));
+  params.set('limit', String(limit));
+  const payload = await authorizedFetchJson(`/api/admin/audit-log?${params.toString()}`);
+  renderAdminAudit(payload.items || []);
+  if (!silent) setAdminFeedback('Audit kayıtları güncellendi.', 'success');
+  return payload.items || [];
+}
+
+async function loadAdminRouteData() {
+  await Promise.all([
+    loadAdminUsers({ silent: true }),
+    loadAdminInvites({ silent: true }),
+    loadAdminAudit({ silent: true }),
+  ]);
+}
+
+function renderAccountSessions(items = []) {
+  if (!accountSessionsList || !accountSessionsEmpty) return;
+  accountSessionsList.innerHTML = '';
+  accountSessionsEmpty.classList.toggle('hidden', items.length > 0);
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'settings-session-item';
+
+    const main = document.createElement('div');
+    main.className = 'settings-session-main';
+
+    const device = document.createElement('div');
+    device.className = 'settings-session-device';
+    device.textContent = item.device_label || 'Bilinmeyen cihaz';
+    if (item.is_current) {
+      const badge = document.createElement('span');
+      badge.className = 'settings-session-badge';
+      badge.textContent = 'Bu cihaz';
+      device.append(' ', badge);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'settings-session-meta';
+    meta.textContent = `IP: ${item.ip || 'bilinmiyor'} • Açılış: ${formatSettingsDate(item.created_at)} • Son kullanım: ${formatSettingsDate(item.last_used_at)}`;
+
+    const actionBtn = document.createElement('button');
+    actionBtn.type = 'button';
+    actionBtn.className = 'settings-danger-btn';
+    actionBtn.textContent = item.is_current ? 'Bu Cihazdan Çık' : 'Oturumu Kapat';
+    actionBtn.dataset.sessionId = item.id;
+    actionBtn.dataset.isCurrent = item.is_current ? 'true' : 'false';
+
+    main.append(device, meta);
+    li.append(main, actionBtn);
+    accountSessionsList.append(li);
+  }
+}
+
 function handleAuthFailure(message) {
+  currentUserProfile = null;
   currentAuthToken = null;
+  currentRefreshToken = null;
+  clearPendingAuthChallenge();
   clearStoredAuth();
   sessionStorage.setItem('sesappLoginError', message || 'Oturumun geçersiz. Tekrar giriş yap.');
   window.location.reload();
 }
 
-async function postJson(url, body) {
-  const response = await fetch(url, {
+async function refreshAccessToken() {
+  if (refreshSessionPromise) return refreshSessionPromise;
+
+  const refreshToken = currentRefreshToken || getStoredRefreshToken();
+  if (!refreshToken) return { ok: false, message: 'Oturum yenilenemedi.' };
+
+  refreshSessionPromise = fetch('/api/auth/refresh', {
     method: 'POST',
-    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  }).then(async (response) => {
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {}
+
+    if (!response.ok) {
+      currentAuthToken = null;
+      currentRefreshToken = null;
+      clearStoredAuth();
+      return { ok: false, message: payload?.error || 'Oturum yenilenemedi.' };
+    }
+
+    const nextTokens = extractSessionTokens(payload);
+    if (!nextTokens.accessToken || !nextTokens.refreshToken) {
+      currentAuthToken = null;
+      currentRefreshToken = null;
+      clearStoredAuth();
+      return { ok: false, message: 'Sunucu eksik oturum verisi döndürdü.' };
+    }
+
+    applySessionTokens({
+      accessToken: nextTokens.accessToken,
+      refreshToken: nextTokens.refreshToken,
+      clearLegacyAccess: true,
+    });
+
+    if (socket) {
+      try {
+        socket.emit('session_refresh', { token: currentAuthToken });
+      } catch {}
+    }
+
+    return { ok: true, payload };
+  }).finally(() => {
+    refreshSessionPromise = null;
+  });
+
+  return refreshSessionPromise;
+}
+
+async function requestJson(url, {
+  method = 'GET',
+  body,
+  headers = {},
+  authorize = true,
+  retryAuth = authorize,
+} = {}) {
+  const requestHeaders = authorize ? getAuthHeaders(headers) : new Headers(headers);
+  if (body !== undefined && !requestHeaders.has('Content-Type')) {
+    requestHeaders.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers: requestHeaders,
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 
   let payload = {};
@@ -244,7 +1276,31 @@ async function postJson(url, body) {
   } catch {}
 
   if (!response.ok) {
-    if (currentAuthToken && ['invalid_session', 'revoked_session', 'missing_account'].includes(payload?.code)) {
+    const authFailureCodes = [
+      'invalid_session',
+      'revoked_session',
+      'missing_account',
+      'stale_token',
+      'expired_token',
+      'revoked_token',
+      'account_disabled',
+      'account_locked',
+    ];
+
+    if (authorize && retryAuth && response.status === 401 && (currentRefreshToken || getStoredRefreshToken()) && url !== '/api/auth/refresh') {
+      const refreshed = await refreshAccessToken();
+      if (refreshed.ok) {
+        return requestJson(url, {
+          method,
+          body,
+          headers,
+          authorize,
+          retryAuth: false,
+        });
+      }
+    }
+
+    if (authorize && authFailureCodes.includes(payload?.code)) {
       handleAuthFailure(payload?.error);
     }
     throw new Error(payload?.error || 'İşlem tamamlanamadı.');
@@ -253,27 +1309,39 @@ async function postJson(url, body) {
   return payload;
 }
 
-async function authorizedFetchJson(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: getAuthHeaders(options.headers),
+async function postJson(url, body, options = {}) {
+  return requestJson(url, {
+    method: 'POST',
+    body,
+    authorize: options.authorize ?? true,
+    retryAuth: options.retryAuth ?? (options.authorize ?? true),
   });
+}
 
-  let payload = null;
+async function authorizedFetchJson(url, options = {}) {
+  return requestJson(url, {
+    method: options.method || 'GET',
+    body: options.body,
+    headers: options.headers || {},
+    authorize: true,
+    retryAuth: options.retryAuth ?? true,
+  });
+}
+
+async function refreshCurrentAccountState() {
+  const payload = await authorizedFetchJson('/api/auth/me');
+  applyCurrentUserProfile(payload.user);
+  return payload.user;
+}
+
+async function loadAccountSessions({ silent = false } = {}) {
   try {
-    payload = await response.json();
-  } catch {}
-
-  if (!response.ok) {
-    const error = new Error(payload?.error || `HTTP ${response.status}`);
-    error.code = payload?.code || null;
-    if (['invalid_session', 'revoked_session', 'missing_account'].includes(error.code)) {
-      handleAuthFailure(payload?.error);
-    }
-    throw error;
+    const payload = await authorizedFetchJson('/api/auth/sessions');
+    renderAccountSessions(payload.items || []);
+    if (!silent) setSettingsFeedback(accountSessionsFeedback, 'Oturum listesi güncellendi.', 'success');
+  } catch (err) {
+    setSettingsFeedback(accountSessionsFeedback, err.message || 'Oturumlar yüklenemedi.', 'error');
   }
-
-  return payload;
 }
 
 function applyRegistrationAvailability() {
@@ -284,13 +1352,21 @@ function applyRegistrationAvailability() {
   }
 }
 
-async function loadAuthenticatedBootstrap() {
-  const [authPayload, channels] = await Promise.all([
-    authorizedFetchJson('/api/auth/me'),
-    authorizedFetchJson('/api/channels'),
-    loadClientConfig(),
-  ]);
-  currentUser = authPayload.user.username;
+async function loadAuthenticatedBootstrap({ adminOnly = false } = {}) {
+  const requests = adminOnly
+    ? [
+        authorizedFetchJson('/api/auth/me'),
+        Promise.resolve(null),
+        loadClientConfig(),
+      ]
+    : [
+        authorizedFetchJson('/api/auth/me'),
+        authorizedFetchJson('/api/channels'),
+        loadClientConfig(),
+      ];
+  const [authPayload, channels] = await Promise.all(requests);
+  applyCurrentUserProfile(authPayload.user);
+  if (adminOnly) return authPayload.user;
   currentChannels = channels;
   const savedChannelId = Number(localStorage.getItem(LAST_CHANNEL_ID_KEY));
   currentChannelId = currentChannels.some((channel) => channel.id === savedChannelId)
@@ -338,31 +1414,58 @@ function createSocketConnection() {
   });
 }
 
-async function bootstrapAuthenticatedApp({ token, shouldLoadSc = true } = {}) {
-  if (token) {
-    currentAuthToken = token;
-    storeAuthToken(token);
+async function bootstrapAuthenticatedApp({ token, refreshToken, shouldLoadSc = true } = {}) {
+  applySessionTokens({
+    accessToken: token || null,
+    refreshToken,
+    clearLegacyAccess: true,
+  });
+
+  await loadAuthenticatedBootstrap({ adminOnly: isAdminRoute });
+  if (isAdminRoute) {
+    if (!ensureAdminRouteAccess()) return;
+    showAdminShell();
+    await loadAdminRouteData();
+    return;
   }
 
-  await loadAuthenticatedBootstrap();
+  hideAdminShell();
   rememberCurrentChannel();
   createSocketConnection();
   if (shouldLoadSc) loadScApi();
 }
 
 async function logoutAndReset({ revoke = true } = {}) {
-  const tokenBeforeLogout = currentAuthToken;
+  let tokenBeforeLogout = currentAuthToken;
+  let refreshBeforeLogout = currentRefreshToken || getStoredRefreshToken();
+
+  if (revoke && refreshBeforeLogout) {
+    try {
+      const refreshed = await refreshAccessToken();
+      if (refreshed.ok) {
+        tokenBeforeLogout = currentAuthToken;
+        refreshBeforeLogout = currentRefreshToken || getStoredRefreshToken();
+      }
+    } catch {}
+  }
+
   currentAuthToken = null;
+  currentRefreshToken = null;
+  currentUserProfile = null;
+  clearPendingAuthChallenge();
   clearStoredAuth();
 
   if (revoke && tokenBeforeLogout) {
     try {
       currentAuthToken = tokenBeforeLogout;
-      await postJson('/api/auth/logout', {});
+      await postJson('/api/auth/logout', { refresh_token: refreshBeforeLogout }, { retryAuth: false });
     } catch {}
   }
 
   currentAuthToken = null;
+  currentRefreshToken = null;
+  currentUserProfile = null;
+  clearPendingAuthChallenge();
   socket?.disconnect();
   window.location.reload();
 }
@@ -1197,6 +2300,7 @@ async function leaveVoiceChannel() {
 function closeAllPeers() {
   for (const [id, pc] of [...peerConnections]) cleanupPeer(id, pc);
   mutedPeers.clear();
+  voicePeerDebug.clear();
 }
 
 function shouldInitiateVoicePeer(peerId) {
@@ -1230,6 +2334,11 @@ function cleanupPeer(peerId, pc = peerConnections.get(peerId)) {
   clearPeerDisconnectTimer(peerId);
   pendingVoiceCandidates.delete(peerId);
   if (pc && peerConnections.get(peerId) === pc) peerConnections.delete(peerId);
+  if (pc) {
+    const state = pc.connectionState === 'closed' ? 'closed' : (pc.connectionState || 'closed');
+    const iceState = pc.iceConnectionState === 'closed' ? 'closed' : (pc.iceConnectionState || 'closed');
+    setVoicePeerDebug(peerId, { state, iceState });
+  }
   if (pc && pc.signalingState !== 'closed') {
     try { pc.close(); } catch {}
   }
@@ -1239,6 +2348,7 @@ function cleanupPeer(peerId, pc = peerConnections.get(peerId)) {
 function forgetVoicePeer(peerId) {
   clearPeerDisconnectTimer(peerId);
   pendingVoiceCandidates.delete(peerId);
+  clearVoicePeerDebug(peerId);
   voicePeerIds.delete(peerId);
 }
 
@@ -1260,6 +2370,7 @@ function schedulePeerDisconnectCleanup(peerId, pc) {
 async function ensureVoicePeerConnection(peerId, username) {
   if (!peerId || peerId === socket?.id) return null;
   if (username) voicePeerIds.set(peerId, username);
+  setVoicePeerDebug(peerId, { username });
   syncPeerAudioElement(peerId);
   return createPeer(peerId, shouldInitiateVoicePeer(peerId));
 }
@@ -1269,6 +2380,13 @@ async function createPeer(peerId, initiator) {
 
   const pc = new RTCPeerConnection(ICE);
   peerConnections.set(peerId, pc);
+  setVoicePeerDebug(peerId, {
+    username: voicePeerIds.get(peerId) || null,
+    state: pc.connectionState || 'new',
+    iceState: pc.iceConnectionState || 'new',
+    path: 'unknown',
+    rttMs: null,
+  });
 
   if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
@@ -1308,6 +2426,7 @@ async function createPeer(peerId, initiator) {
   };
 
   pc.onconnectionstatechange = () => {
+    setVoicePeerDebug(peerId, { state: pc.connectionState || 'unknown' });
     if (['connected', 'completed'].includes(pc.connectionState)) {
       clearPeerDisconnectTimer(peerId);
       return;
@@ -1320,6 +2439,7 @@ async function createPeer(peerId, initiator) {
   };
 
   pc.oniceconnectionstatechange = () => {
+    setVoicePeerDebug(peerId, { iceState: pc.iceConnectionState || 'unknown' });
     if (['connected', 'completed'].includes(pc.iceConnectionState)) {
       clearPeerDisconnectTimer(peerId);
       return;
@@ -1336,28 +2456,8 @@ async function createPeer(peerId, initiator) {
     if (!peerConnections.has(peerId)) { clearInterval(qualityInterval); return; }
     try {
       const stats = await pc.getStats();
-      stats.forEach(s => {
-        if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.currentRoundTripTime !== undefined) {
-          const rtt = s.currentRoundTripTime * 1000; // ms
-          const dot = rtt < 80 ? '🟢' : rtt < 200 ? '🟡' : '🔴';
-          const username = voicePeerIds.get(peerId);
-          if (username) {
-            document.querySelectorAll('.vc-member-item').forEach(li => {
-              if (li.dataset.username === username) {
-                let badge = li.querySelector('.quality-badge');
-                if (!badge) {
-                  badge = document.createElement('span');
-                  badge.className = 'quality-badge';
-                  badge.style.cssText = 'font-size:.7rem;margin-left:2px;';
-                  li.querySelector('span')?.after(badge);
-                }
-                badge.textContent = dot;
-                badge.title = `${Math.round(rtt)}ms`;
-              }
-            });
-          }
-        }
-      });
+      const summary = summarizeSelectedCandidatePair(stats);
+      if (summary) setVoicePeerDebug(peerId, summary);
     } catch {}
   }, 5000);
 
@@ -1509,6 +2609,14 @@ $('settings-btn').addEventListener('click', () => {
   });
   pttController?.syncUi?.();
   audioDeviceController?.refreshSelectors?.({ ensurePermissions: true });
+  clearAccountFeedback();
+  accountPasswordForm?.reset?.();
+  accountEmailPasswordInput && (accountEmailPasswordInput.value = '');
+  accountDeleteForm?.reset?.();
+  accountDeleteDetails?.removeAttribute?.('open');
+  applyCurrentUserProfile(currentUserProfile);
+  void refreshCurrentAccountState().catch(() => {});
+  void loadAccountSessions({ silent: true });
   settingsOverlay.classList.remove('hidden');
 });
 
@@ -1536,6 +2644,445 @@ document.querySelectorAll('.settings-opt[data-voice-mode]').forEach(opt => {
 });
 audioDeviceController?.attach?.();
 
+accountDisplayNameSave?.addEventListener('click', async () => {
+  const displayName = accountDisplayNameInput?.value?.trim() || '';
+  if (!displayName) {
+    setSettingsFeedback(accountProfileFeedback, 'Görünen ad boş bırakılamaz.', 'error');
+    return;
+  }
+  accountDisplayNameSave.disabled = true;
+  setSettingsFeedback(accountProfileFeedback, '');
+  try {
+    const payload = await postJson('/api/auth/change-display-name', {
+      display_name: displayName,
+    });
+    applyCurrentUserProfile(payload.user);
+    setSettingsFeedback(accountProfileFeedback, 'Görünen ad güncellendi.', 'success');
+  } catch (err) {
+    setSettingsFeedback(accountProfileFeedback, err.message || 'Görünen ad güncellenemedi.', 'error');
+  } finally {
+    accountDisplayNameSave.disabled = false;
+  }
+});
+
+accountPasswordForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const currentPassword = accountCurrentPasswordInput?.value || '';
+  const newPassword = accountNewPasswordInput?.value || '';
+  const confirmPassword = accountNewPasswordConfirmInput?.value || '';
+
+  if (!currentPassword || !newPassword) {
+    setSettingsFeedback(accountPasswordFeedback, 'Tüm şifre alanlarını doldur.', 'error');
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    setSettingsFeedback(accountPasswordFeedback, 'Yeni şifreler eşleşmiyor.', 'error');
+    return;
+  }
+
+  const submitBtn = accountPasswordForm.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
+  setSettingsFeedback(accountPasswordFeedback, '');
+
+  try {
+    await postJson('/api/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    sessionStorage.setItem('sesappLoginError', 'Şifren değişti. Tekrar giriş yap.');
+    await logoutAndReset({ revoke: false });
+  } catch (err) {
+    setSettingsFeedback(accountPasswordFeedback, err.message || 'Şifre değiştirilemedi.', 'error');
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+});
+
+accountEmailRefreshBtn?.addEventListener('click', async () => {
+  accountEmailRefreshBtn.disabled = true;
+  setSettingsFeedback(accountEmailFeedback, '');
+  try {
+    await refreshCurrentAccountState();
+    setSettingsFeedback(accountEmailFeedback, 'E-posta bilgisi yenilendi.', 'success');
+  } catch (err) {
+    setSettingsFeedback(accountEmailFeedback, err.message || 'E-posta bilgisi yenilenemedi.', 'error');
+  } finally {
+    accountEmailRefreshBtn.disabled = false;
+  }
+});
+
+accountEmailForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const newEmail = accountEmailInput?.value?.trim() || '';
+  const currentPassword = accountEmailPasswordInput?.value || '';
+  if (!newEmail || !currentPassword) {
+    setSettingsFeedback(accountEmailFeedback, 'E-posta ve mevcut şifre gerekli.', 'error');
+    return;
+  }
+
+  const submitBtn = accountEmailForm.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
+  setSettingsFeedback(accountEmailFeedback, '');
+
+  try {
+    const payload = await postJson('/api/auth/change-email', {
+      new_email: newEmail,
+      current_password: currentPassword,
+    });
+    if (payload?.user) applyCurrentUserProfile(payload.user);
+    accountEmailPasswordInput.value = '';
+    setSettingsFeedback(
+      accountEmailFeedback,
+      payload?.warning || 'Dogrulama maili gonderildi. Gelen kutunu kontrol et.',
+      payload?.warning ? 'error' : 'success',
+    );
+  } catch (err) {
+    setSettingsFeedback(accountEmailFeedback, err.message || 'E-posta guncellenemedi.', 'error');
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+});
+
+accountRecoveryForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const currentPassword = accountRecoveryPasswordInput?.value || '';
+  if (!currentPassword) {
+    setSettingsFeedback(accountRecoveryFeedback, 'Mevcut şifren gerekli.', 'error');
+    return;
+  }
+
+  const submitBtn = accountRecoveryForm.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
+  setSettingsFeedback(accountRecoveryFeedback, '');
+
+  try {
+    const payload = await postJson('/api/auth/2fa/regenerate-recovery', {
+      current_password: currentPassword,
+    });
+    if (accountRecoveryCodes) {
+      accountRecoveryCodes.textContent = formatRecoveryCodes(payload.recovery_codes || []);
+    }
+    accountRecoveryResult?.classList.remove('hidden');
+    if (accountRecoveryPasswordInput) accountRecoveryPasswordInput.value = '';
+    setSettingsFeedback(accountRecoveryFeedback, 'Yeni kurtarma kodların üretildi. Bunları şimdi kaydet.', 'success');
+  } catch (err) {
+    setSettingsFeedback(accountRecoveryFeedback, err.message || 'Kurtarma kodları yenilenemedi.', 'error');
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+});
+
+accountRecoveryCopyBtn?.addEventListener('click', async () => {
+  const codes = accountRecoveryCodes?.textContent?.trim() || '';
+  if (!codes) return;
+  try {
+    await navigator.clipboard.writeText(codes);
+    setSettingsFeedback(accountRecoveryFeedback, 'Kurtarma kodları panoya kopyalandı.', 'success');
+  } catch {
+    setSettingsFeedback(accountRecoveryFeedback, 'Kopyalama başarısız oldu.', 'error');
+  }
+});
+
+accountSessionsRefreshBtn?.addEventListener('click', () => {
+  void loadAccountSessions();
+});
+
+accountLogoutAllBtn?.addEventListener('click', async () => {
+  accountLogoutAllBtn.disabled = true;
+  setSettingsFeedback(accountSessionsFeedback, '');
+  try {
+    await postJson('/api/auth/sessions/logout-all', {});
+    sessionStorage.setItem('sesappLoginError', 'Tüm cihazlardaki oturumların kapatıldı.');
+    await logoutAndReset({ revoke: false });
+  } catch (err) {
+    setSettingsFeedback(accountSessionsFeedback, err.message || 'Tüm oturumlar kapatılamadı.', 'error');
+  } finally {
+    accountLogoutAllBtn.disabled = false;
+  }
+});
+
+accountSessionsList?.addEventListener('click', async (e) => {
+  const button = e.target.closest('button[data-session-id]');
+  if (!button) return;
+  const sessionId = button.dataset.sessionId;
+  const isCurrent = button.dataset.isCurrent === 'true';
+  button.disabled = true;
+  setSettingsFeedback(accountSessionsFeedback, '');
+
+  try {
+    await requestJson(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      authorize: true,
+      retryAuth: true,
+    });
+    if (isCurrent) {
+      sessionStorage.setItem('sesappLoginError', 'Bu cihazdaki oturum kapatıldı.');
+      await logoutAndReset({ revoke: false });
+      return;
+    }
+    setSettingsFeedback(accountSessionsFeedback, 'Oturum kapatıldı.', 'success');
+    await loadAccountSessions({ silent: true });
+  } catch (err) {
+    setSettingsFeedback(accountSessionsFeedback, err.message || 'Oturum kapatılamadı.', 'error');
+    button.disabled = false;
+  }
+});
+
+accountDeleteForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const password = accountDeletePasswordInput?.value || '';
+  const phrase = accountDeletePhraseInput?.value?.trim().toUpperCase() || '';
+  if (!password) {
+    setSettingsFeedback(accountDeleteFeedback, 'Mevcut şifren gerekli.', 'error');
+    return;
+  }
+  if (phrase !== 'HESABIMI SIL') {
+    setSettingsFeedback(accountDeleteFeedback, 'Onay metnini tam olarak HESABIMI SIL yaz.', 'error');
+    return;
+  }
+
+  const submitBtn = accountDeleteForm.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
+  setSettingsFeedback(accountDeleteFeedback, '');
+  try {
+    await postJson('/api/auth/account/delete', {
+      current_password: password,
+    });
+    sessionStorage.setItem('sesappLoginError', 'Hesabın 7 gün sonra silinmek üzere işaretlendi.');
+    await logoutAndReset({ revoke: false });
+  } catch (err) {
+    setSettingsFeedback(accountDeleteFeedback, err.message || 'Silme isteği başlatılamadı.', 'error');
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+});
+
+accountAdminOpenBtn?.addEventListener('click', () => {
+  window.location.href = '/admin';
+});
+
+adminLogoutBtn?.addEventListener('click', () => {
+  logoutAndReset();
+});
+
+document.querySelectorAll('.admin-tab-btn[data-admin-tab]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const nextTab = btn.dataset.adminTab || 'users';
+    setAdminTab(nextTab);
+    if (nextTab === 'users') void loadAdminUsers({ silent: true }).catch((err) => setAdminFeedback(err.message || 'Kullanıcılar yüklenemedi.', 'error'));
+    if (nextTab === 'invites') void loadAdminInvites({ silent: true }).catch((err) => setAdminFeedback(err.message || 'Davetler yüklenemedi.', 'error'));
+    if (nextTab === 'audit') void loadAdminAudit({ silent: true }).catch((err) => setAdminFeedback(err.message || 'Audit kayıtları yüklenemedi.', 'error'));
+  });
+});
+
+adminUsersRefreshBtn?.addEventListener('click', () => {
+  setAdminFeedback('');
+  void loadAdminUsers().catch((err) => setAdminFeedback(err.message || 'Kullanıcılar yüklenemedi.', 'error'));
+});
+
+adminInvitesRefreshBtn?.addEventListener('click', () => {
+  setAdminFeedback('');
+  void loadAdminInvites().catch((err) => setAdminFeedback(err.message || 'Davetler yüklenemedi.', 'error'));
+});
+
+adminAuditRefreshBtn?.addEventListener('click', () => {
+  setAdminFeedback('');
+  void loadAdminAudit().catch((err) => setAdminFeedback(err.message || 'Audit kayıtları yüklenemedi.', 'error'));
+});
+
+[adminAuditEvent, adminAuditActor, adminAuditSince, adminAuditUntil, adminAuditLimit].forEach((el) => {
+  el?.addEventListener('change', () => {
+    if (currentAdminTab !== 'audit') return;
+    setAdminFeedback('');
+    void loadAdminAudit({ silent: true }).catch((err) => setAdminFeedback(err.message || 'Audit kayıtları yüklenemedi.', 'error'));
+  });
+  el?.addEventListener('keydown', (evt) => {
+    if (evt.key !== 'Enter') return;
+    evt.preventDefault();
+    setAdminFeedback('');
+    void loadAdminAudit({ silent: true }).catch((err) => setAdminFeedback(err.message || 'Audit kayıtları yüklenemedi.', 'error'));
+  });
+});
+
+adminUserSearch?.addEventListener('input', () => {
+  clearTimeout(adminUsersSearchTimer);
+  adminUsersSearchTimer = setTimeout(() => {
+    setAdminFeedback('');
+    void loadAdminUsers({ silent: true }).catch((err) => setAdminFeedback(err.message || 'Kullanıcılar yüklenemedi.', 'error'));
+  }, 250);
+});
+
+adminUserStatusFilter?.addEventListener('change', () => {
+  setAdminFeedback('');
+  void loadAdminUsers({ silent: true }).catch((err) => setAdminFeedback(err.message || 'Kullanıcılar yüklenemedi.', 'error'));
+});
+
+adminInviteForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!adminInviteCreateBtn) return;
+  adminInviteCreateBtn.disabled = true;
+  setAdminFeedback('');
+  try {
+    const payload = await postJson('/api/admin/invites', {
+      label: adminInviteLabel?.value?.trim() || '',
+      max_uses: Number(adminInviteMaxUses?.value) || 1,
+      ttl_hours: adminInviteTtlHours?.value ? Number(adminInviteTtlHours.value) : null,
+    });
+    if (adminInviteCodeValue) adminInviteCodeValue.textContent = payload.code || '—';
+    adminInviteResult?.classList.remove('hidden');
+    adminInviteForm.reset();
+    if (adminInviteMaxUses) adminInviteMaxUses.value = '1';
+    await loadAdminInvites({ silent: true });
+    setAdminFeedback('Yeni davet oluşturuldu. Kod sadece burada bir kez gösterilir.', 'success');
+  } catch (err) {
+    setAdminFeedback(err.message || 'Davet oluşturulamadı.', 'error');
+  } finally {
+    adminInviteCreateBtn.disabled = false;
+  }
+});
+
+adminInviteCopyBtn?.addEventListener('click', async () => {
+  const code = adminInviteCodeValue?.textContent?.trim() || '';
+  if (!code || code === '—') return;
+  try {
+    await navigator.clipboard.writeText(code);
+    setAdminFeedback('Davet kodu panoya kopyalandı.', 'success');
+  } catch {
+    setAdminFeedback('Kopyalama başarısız oldu. Kodu elle seçebilirsin.', 'error');
+  }
+});
+
+adminInvitesList?.addEventListener('click', async (e) => {
+  const button = e.target.closest('button[data-action="revoke"][data-invite-id]');
+  if (!button) return;
+  button.disabled = true;
+  setAdminFeedback('');
+  try {
+    await requestJson(`/api/admin/invites/${encodeURIComponent(button.dataset.inviteId)}`, {
+      method: 'DELETE',
+      authorize: true,
+      retryAuth: true,
+    });
+    await loadAdminInvites({ silent: true });
+    setAdminFeedback('Davet iptal edildi.', 'success');
+  } catch (err) {
+    setAdminFeedback(err.message || 'Davet iptal edilemedi.', 'error');
+    button.disabled = false;
+  }
+});
+
+adminUsersList?.addEventListener('click', async (e) => {
+  const button = e.target.closest('button[data-action][data-username]');
+  if (!button) return;
+  const { action, username } = button.dataset;
+  if (!username) return;
+
+  button.disabled = true;
+  setAdminFeedback('');
+
+  try {
+    if (action === 'disable') {
+      const payload = await postJson(`/api/admin/users/${encodeURIComponent(username)}/disable`, {});
+      if (username === currentUser && payload?.user) {
+        applyCurrentUserProfile(payload.user);
+        handleAuthFailure('Hesabın devre dışı bırakıldı.');
+        return;
+      }
+      await loadAdminUsers({ silent: true });
+      setAdminFeedback(`@${username} devre dışı bırakıldı.`, 'success');
+      return;
+    }
+
+    if (action === 'enable') {
+      const payload = await postJson(`/api/admin/users/${encodeURIComponent(username)}/enable`, {});
+      if (username === currentUser && payload?.user) applyCurrentUserProfile(payload.user);
+      await loadAdminUsers({ silent: true });
+      setAdminFeedback(`@${username} tekrar aktif edildi.`, 'success');
+      return;
+    }
+
+    if (action === 'role') {
+      const nextRole = button.dataset.role === 'admin' ? 'admin' : 'user';
+      const payload = await postJson(`/api/admin/users/${encodeURIComponent(username)}/role`, { role: nextRole });
+      if (username === currentUser && payload?.user) {
+        applyCurrentUserProfile(payload.user);
+        if (!ensureAdminRouteAccess()) return;
+      }
+      await loadAdminUsers({ silent: true });
+      setAdminFeedback(`@${username} için rol ${nextRole} olarak güncellendi.`, 'success');
+      return;
+    }
+
+    if (action === 'logout-all') {
+      await postJson(`/api/admin/users/${encodeURIComponent(username)}/logout-all`, {});
+      if (username === currentUser) {
+        sessionStorage.setItem('sesappLoginError', 'Tüm oturumların kapatıldı.');
+        await logoutAndReset({ revoke: false });
+        return;
+      }
+      setAdminFeedback(`@${username} için tüm oturumlar kapatıldı.`, 'success');
+      return;
+    }
+
+    if (action === 'email-set') {
+      const email = window.prompt(`@${username} için yeni e-posta adresi`, '');
+      if (!email) {
+        button.disabled = false;
+        return;
+      }
+      const payload = await postJson(`/api/admin/users/${encodeURIComponent(username)}/email-set`, { email });
+      if (username === currentUser && payload?.user) applyCurrentUserProfile(payload.user);
+      await loadAdminUsers({ silent: true });
+      setAdminFeedback(`@${username} için e-posta güncellendi.`, 'success');
+      return;
+    }
+
+    if (action === 'totp-reset') {
+      const confirmed = window.confirm(`@${username} için iki adımlı doğrulamayı sıfırlamak istiyor musun?`);
+      if (!confirmed) {
+        button.disabled = false;
+        return;
+      }
+      await postJson('/api/auth/2fa/reset', { username });
+      if (username === currentUser) {
+        sessionStorage.setItem('sesappLoginError', '2FA kurulumun sıfırlandı. Tekrar giriş yap.');
+        await logoutAndReset({ revoke: false });
+        return;
+      }
+      await loadAdminUsers({ silent: true });
+      setAdminFeedback(`@${username} için 2FA sıfırlandı.`, 'success');
+      return;
+    }
+
+    if (action === 'delete') {
+      const phrase = window.prompt(`@${username} hesabını silme sürecini başlatmak için HESABIMI SIL yaz.`, '');
+      if (phrase?.trim().toUpperCase() !== 'HESABIMI SIL') {
+        button.disabled = false;
+        setAdminFeedback('Silme isteği iptal edildi.', 'error');
+        return;
+      }
+      await requestJson(`/api/admin/users/${encodeURIComponent(username)}`, {
+        method: 'DELETE',
+        body: { confirmation_phrase: 'HESABIMI SIL' },
+        authorize: true,
+        retryAuth: true,
+      });
+      if (username === currentUser) {
+        sessionStorage.setItem('sesappLoginError', 'Hesabın silinmek üzere işaretlendi.');
+        await logoutAndReset({ revoke: false });
+        return;
+      }
+      await loadAdminUsers({ silent: true });
+      setAdminFeedback(`@${username} için silme süreci başlatıldı.`, 'success');
+      return;
+    }
+  } catch (err) {
+    setAdminFeedback(err.message || 'İşlem tamamlanamadı.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 function showPttIndicator(active) {
   let el = $('ptt-indicator');
   if (!el) {
@@ -1554,6 +3101,7 @@ function hidePttIndicator() {
 }
 
 function updateVoiceRoomsUI(state) {
+  latestVoiceRoomsState = state;
   for (const [room, users] of Object.entries(state)) {
     const el = document.getElementById(`vm-${room}`);
     if (!el) continue;
@@ -1570,6 +3118,7 @@ function updateVoiceRoomsUI(state) {
       av.textContent = username[0].toUpperCase();
 
       const name = document.createElement('span');
+      name.className = 'vc-member-name';
       name.textContent = username;
       name.style.flex = '1';
       name.style.fontSize = '.82rem';
@@ -1577,12 +3126,16 @@ function updateVoiceRoomsUI(state) {
 
       li.append(av, name);
 
-      if (mutedPeers.has(username)) {
+      if (isVoicePeerMuted(username)) {
         const icon = document.createElement('span');
         icon.className = 'vc-muted-icon';
         icon.textContent = '🔇';
         li.append(icon);
       }
+
+      const status = document.createElement('span');
+      status.className = 'vc-peer-status';
+      li.append(status);
 
       // Kendi satırı değilse ses kontrolleri
       if (username !== currentUser) {
@@ -1636,6 +3189,7 @@ function updateVoiceRoomsUI(state) {
       }
 
       el.append(li);
+      updateVoicePeerUi(username);
     }
   }
 }
@@ -1643,11 +3197,8 @@ function updateVoiceRoomsUI(state) {
 // ═══════════════ SOCKET OLAYLARI ═══════════════
 function setupSocket() {
   socket.on('auth_error', ({ code, message }) => {
-    if (code === 'invalid_session') {
-      currentAuthToken = null;
-      clearStoredAuth();
-      sessionStorage.setItem('sesappLoginError', message);
-      window.location.reload();
+    if (isFatalAuthErrorCode(code)) {
+      handleAuthFailure(message);
       return;
     }
     if (currentUser && appEl.classList.contains('_shown')) {
@@ -1669,9 +3220,7 @@ function setupSocket() {
       appEl.classList.add('_shown');
       loginScreen.style.display = 'none';
       appEl.classList.remove('hidden');
-      selfAvatar.textContent = currentUser[0].toUpperCase();
-      selfAvatar.style.background = avatarColor(currentUser);
-      selfUsername.textContent = currentUser;
+      applyCurrentUserProfile(currentUserProfile || { username: currentUser, displayName: currentUser });
       renderChannelList(currentChannels);
       setActiveChannelInSidebar(currentChannelId);
     }
@@ -1815,6 +3364,7 @@ function setupSocket() {
   socket.on('voice_peer_muted', ({ socketId, muted }) => {
     if (muted) mutedPeers.add(socketId);
     else mutedPeers.delete(socketId);
+    updateAllVoicePeerUi();
   });
 
   // ── Müzik ────────────────────────────────────────────────────────────────
@@ -1872,11 +3422,8 @@ function setupSocket() {
   });
 
   socket.on('connect_error', (err) => {
-    if (err?.data?.code === 'invalid_session' || err?.data?.code === 'revoked_session' || err?.data?.code === 'missing_account') {
-      currentAuthToken = null;
-      clearStoredAuth();
-      sessionStorage.setItem('sesappLoginError', err.message || 'Oturumun geçersiz. Tekrar giriş yap.');
-      window.location.reload();
+    if (isFatalAuthErrorCode(err?.data?.code)) {
+      handleAuthFailure(err.message || 'Oturumun geçersiz. Tekrar giriş yap.');
       return;
     }
     showConnectionBanner('Sunucuya ulaşılamıyor, yeniden deneniyor...');
@@ -1885,35 +3432,225 @@ function setupSocket() {
   setupPokerSocket();
 }
 
+async function handleSpecialAuthRoute() {
+  if (isConfirmEmailRoute) {
+    const token = authRouteParams.get('token') || '';
+    setAuthMode('login');
+    if (!token) {
+      setLoginStatus('Dogrulama baglantisi gecersiz gorunuyor.');
+      return true;
+    }
+
+    setLoginBusy(true);
+    try {
+      await postJson('/api/auth/change-email/confirm', { token }, { authorize: false, retryAuth: false });
+      setLoginStatus('E-posta adresin dogrulandi. Artik sifre kurtarma icin kullanabilirsin.', 'success');
+      window.history.replaceState({}, '', '/');
+    } catch (err) {
+      setLoginStatus(err.message || 'Dogrulama baglantisi gecersiz ya da suresi dolmus.');
+    } finally {
+      setLoginBusy(false);
+    }
+    return true;
+  }
+
+  if (isResetPasswordRoute) {
+    pendingResetToken = authRouteParams.get('token') || '';
+    setAuthMode('reset');
+    if (!pendingResetToken) {
+      setLoginStatus('Sifirlama baglantisi gecersiz gorunuyor.');
+    }
+    return true;
+  }
+
+  return false;
+}
+
 // ═══════════════ GİRİŞ ═══════════════
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const username = usernameInput.value.trim();
+  const email = emailInput?.value?.trim() || '';
   const password = passwordInput.value;
+  const confirmPassword = resetPasswordConfirmInput?.value || '';
   const inviteCode = inviteCodeInput?.value || '';
-  if (!username) return;
-  loginError.textContent = '';
+  const mfaCode = mfaCodeInput?.value?.trim() || '';
+  const recoveryCode = mfaRecoveryInput?.value?.trim() || '';
+  if ((authMode === 'login' || authMode === 'register') && !username) return;
+  setLoginStatus('', 'error');
   setLoginBusy(true);
+
+  if (authMode === 'forgot') {
+    try {
+      await postJson('/api/auth/forgot-password', { email }, { authorize: false, retryAuth: false });
+      setLoginStatus('Eger bu e-posta dogrulandiysa sifirlama linki gonderildi.', 'success');
+      setAuthMode('login');
+    } catch (err) {
+      setLoginStatus(err.message || 'Sifirlama istegi gonderilemedi.');
+    }
+    setLoginBusy(false);
+    return;
+  }
+
+  if (authMode === 'reset') {
+    if (!pendingResetToken) {
+      setLoginStatus('Sifirlama baglantisi gecersiz ya da eksik.');
+      setLoginBusy(false);
+      return;
+    }
+    if (!password) {
+      setLoginStatus('Yeni sifreni gir.');
+      setLoginBusy(false);
+      return;
+    }
+    if (password !== confirmPassword) {
+      setLoginStatus('Yeni sifreler eslesmiyor.');
+      setLoginBusy(false);
+      return;
+    }
+    try {
+      await postJson('/api/auth/reset-password', {
+        token: pendingResetToken,
+        new_password: password,
+      }, { authorize: false, retryAuth: false });
+      pendingResetToken = null;
+      window.history.replaceState({}, '', '/');
+      resetPasswordConfirmInput.value = '';
+      passwordInput.value = '';
+      setAuthMode('login');
+      setLoginStatus('Sifren yenilendi. Simdi yeni sifrenle giris yap.', 'success');
+    } catch (err) {
+      setLoginStatus(err.message || 'Sifre yenilenemedi.');
+    }
+    setLoginBusy(false);
+    return;
+  }
+
+  if (authMode === 'mfa-enroll') {
+    if (!currentPendingAuthChallenge?.token) {
+      setLoginStatus('Dogrulama oturumu bulunamadi. Tekrar giris yap.');
+      setLoginBusy(false);
+      return;
+    }
+    if (!mfaRecoverySavedCheck?.checked) {
+      setLoginStatus('Devam etmeden once kurtarma kodlarini kaydettigini onayla.');
+      setLoginBusy(false);
+      return;
+    }
+    if (!mfaCode) {
+      setLoginStatus('Authenticator uygulamandaki 6 haneli kodu gir.');
+      setLoginBusy(false);
+      return;
+    }
+    try {
+      const authPayload = await requestPendingJson('/api/auth/2fa/enroll/confirm', {
+        body: { code: mfaCode },
+      });
+      clearPendingAuthChallenge();
+      const { accessToken, refreshToken } = extractSessionTokens(authPayload);
+      await bootstrapAuthenticatedApp({ token: accessToken, refreshToken, shouldLoadSc: true });
+      setLoginBusy(false);
+      return;
+    } catch (err) {
+      setLoginStatus(err.message || 'Iki adimli dogrulama tamamlanamadi.');
+      setLoginBusy(false);
+      return;
+    }
+  }
+
+  if (authMode === 'mfa-verify') {
+    if (!currentPendingAuthChallenge?.token) {
+      setLoginStatus('Dogrulama oturumu bulunamadi. Tekrar giris yap.');
+      setLoginBusy(false);
+      return;
+    }
+    if (!mfaCode) {
+      setLoginStatus('Authenticator uygulamandaki 6 haneli kodu gir.');
+      setLoginBusy(false);
+      return;
+    }
+    try {
+      const authPayload = await requestPendingJson('/api/auth/2fa/verify', {
+        body: { code: mfaCode },
+      });
+      clearPendingAuthChallenge();
+      const { accessToken, refreshToken } = extractSessionTokens(authPayload);
+      await bootstrapAuthenticatedApp({ token: accessToken, refreshToken, shouldLoadSc: true });
+      setLoginBusy(false);
+      return;
+    } catch (err) {
+      setLoginStatus(err.message || 'Dogrulama basarisiz.');
+      setLoginBusy(false);
+      return;
+    }
+  }
+
+  if (authMode === 'mfa-recovery') {
+    if (!currentPendingAuthChallenge?.token) {
+      setLoginStatus('Dogrulama oturumu bulunamadi. Tekrar giris yap.');
+      setLoginBusy(false);
+      return;
+    }
+    if (!recoveryCode) {
+      setLoginStatus('Kurtarma kodunu gir.');
+      setLoginBusy(false);
+      return;
+    }
+    try {
+      const authPayload = await requestPendingJson('/api/auth/2fa/recovery', {
+        body: { recovery_code: recoveryCode },
+      });
+      clearPendingAuthChallenge();
+      const { accessToken, refreshToken } = extractSessionTokens(authPayload);
+      await bootstrapAuthenticatedApp({ token: accessToken, refreshToken, shouldLoadSc: true });
+      setLoginBusy(false);
+      return;
+    } catch (err) {
+      setLoginStatus(err.message || 'Kurtarma kodu kabul edilmedi.');
+      setLoginBusy(false);
+      return;
+    }
+  }
 
   let authPayload;
   try {
     authPayload = await postJson(
       authMode === 'register' ? '/api/auth/register' : '/api/auth/login',
       authMode === 'register'
-        ? { username, password, inviteCode }
+        ? { username, password, inviteCode, email }
         : { username, password },
+      { authorize: false, retryAuth: false },
     );
   } catch (err) {
-    loginError.textContent = err.message || 'Giriş başarısız.';
+    setLoginStatus(err.message || 'Giriş başarısız.');
+    setLoginBusy(false);
+    return;
+  }
+
+  if (authPayload?.pending_token) {
+    try {
+      await beginPendingAuthFlow(authPayload);
+    } catch (err) {
+      clearPendingAuthChallenge();
+      setLoginStatus(err.message || 'Iki adimli dogrulama baslatilamadi.');
+    }
     setLoginBusy(false);
     return;
   }
 
   try {
-    await bootstrapAuthenticatedApp({ token: authPayload.token });
+    const { accessToken, refreshToken } = extractSessionTokens(authPayload);
+    clearPendingAuthChallenge();
+    await bootstrapAuthenticatedApp({ token: accessToken, refreshToken, shouldLoadSc: true });
+    if (authPayload?.warning) {
+      showConnectionBanner(authPayload.warning);
+      setTimeout(() => hideConnectionBanner(), 4500);
+    }
   } catch {
-    loginError.textContent = 'Sunucuya bağlanılamadı.';
+    setLoginStatus('Sunucuya bağlanılamadı.');
     clearStoredAuth();
+    currentAuthToken = null;
+    currentRefreshToken = null;
     setLoginBusy(false);
     return;
   }
@@ -1921,12 +3658,44 @@ loginForm.addEventListener('submit', async (e) => {
 });
 
 authLoginTab?.addEventListener('click', () => {
-  loginError.textContent = '';
+  setLoginStatus('', 'error');
   setAuthMode('login');
 });
 authRegisterTab?.addEventListener('click', () => {
-  loginError.textContent = '';
+  setLoginStatus('', 'error');
   setAuthMode('register');
+});
+forgotPasswordLink?.addEventListener('click', () => {
+  setLoginStatus('', 'error');
+  setAuthMode('forgot');
+});
+mfaRecoverySavedCheck?.addEventListener('change', () => {
+  updatePendingAuthUi();
+});
+mfaSecretCopyBtn?.addEventListener('click', () => {
+  const value = currentPendingAuthChallenge?.secretB32 || '';
+  if (!value) return;
+  void copyPlainText(value, 'Kurulum anahtarı panoya kopyalandı.');
+});
+mfaRecoveryCopyBtn?.addEventListener('click', () => {
+  const codes = formatRecoveryCodes(currentPendingAuthChallenge?.recoveryCodes || []);
+  if (!codes) return;
+  void copyPlainText(codes, 'Kurtarma kodları panoya kopyalandı.');
+});
+mfaUseRecoveryBtn?.addEventListener('click', () => {
+  setLoginStatus('', 'error');
+  setAuthMode('mfa-recovery');
+});
+mfaUseAppBtn?.addEventListener('click', () => {
+  setLoginStatus('', 'error');
+  setAuthMode('mfa-verify');
+});
+authBackLink?.addEventListener('click', () => {
+  setLoginStatus('', 'error');
+  pendingResetToken = null;
+  clearPendingAuthChallenge();
+  if (isResetPasswordRoute || isConfirmEmailRoute) window.history.replaceState({}, '', '/');
+  setAuthMode('login');
 });
 logoutBtn?.addEventListener('click', () => {
   logoutAndReset();
@@ -1937,21 +3706,41 @@ applyRegistrationAvailability();
 loadClientConfig();
 const pendingLoginError = sessionStorage.getItem('sesappLoginError');
 if (pendingLoginError) {
-  loginError.textContent = pendingLoginError;
+  setLoginStatus(pendingLoginError, pendingLoginError.includes('Dogrulama') ? 'success' : 'error');
   sessionStorage.removeItem('sesappLoginError');
 }
 
-const existingAuthToken = getStoredAuthToken();
-if (existingAuthToken) {
-  setLoginBusy(true);
-  bootstrapAuthenticatedApp({ token: existingAuthToken, shouldLoadSc: true })
-    .catch((err) => {
-      clearStoredAuth();
-      currentAuthToken = null;
-      loginError.textContent = err?.message || 'Oturum geri yüklenemedi.';
-      setLoginBusy(false);
-    });
-}
+void (async () => {
+  const isSpecialAuthRoute = await handleSpecialAuthRoute();
+  const existingRefreshToken = getStoredRefreshToken();
+  const existingAuthToken = getStoredAuthToken();
+  if (!isSpecialAuthRoute && existingRefreshToken) {
+    currentRefreshToken = existingRefreshToken;
+    setLoginBusy(true);
+    refreshAccessToken()
+      .then((result) => {
+        if (!result.ok) throw new Error(result.message || 'Oturum geri yüklenemedi.');
+        return bootstrapAuthenticatedApp({ shouldLoadSc: true });
+      })
+      .catch((err) => {
+        clearStoredAuth();
+        currentAuthToken = null;
+        currentRefreshToken = null;
+        setLoginStatus(err?.message || 'Oturum geri yüklenemedi.');
+        setLoginBusy(false);
+      });
+  } else if (!isSpecialAuthRoute && existingAuthToken) {
+    setLoginBusy(true);
+    bootstrapAuthenticatedApp({ token: existingAuthToken, shouldLoadSc: true })
+      .catch((err) => {
+        clearStoredAuth();
+        currentAuthToken = null;
+        currentRefreshToken = null;
+        setLoginStatus(err?.message || 'Oturum geri yüklenemedi.');
+        setLoginBusy(false);
+      });
+  }
+})();
 
 // ═══════════════ MESAJ GÖNDER ═══════════════
 messageForm.addEventListener('submit', async (e) => {

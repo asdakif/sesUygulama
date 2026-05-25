@@ -1,25 +1,26 @@
 const express   = require('express');
 const http      = require('http');
+const path      = require('path');
 const { Server } = require('socket.io');
 const helmet    = require('helmet');
 const rateLimit = require('express-rate-limit');
 const db        = require('./database');
 const {
-  createAuthToken,
-  hashPassword,
-  validatePassword,
-  validateUsername,
+  createAuditLogger,
+  createLoginThrottle,
   verifyAuthToken,
-  verifyPassword,
 } = require('./server/auth');
 const {
   createHttpAuthMiddleware,
   createSocketAuthMiddleware,
+  resolveAuthSession,
 } = require('./server/auth-middleware');
+const { createAuthRouter } = require('./server/auth-routes');
 const config    = require('./server/config');
 const { createLogger } = require('./server/logger');
 const { createRealtimeState } = require('./server/realtime-state');
 const { createSoundCloudService } = require('./server/soundcloud');
+const { bootstrapAdminRole } = require('./server/admin-bootstrap');
 
 const log = createLogger('server');
 const socketLog = log.child('socket');
@@ -34,24 +35,34 @@ const io = new Server(server, {
 // expects forwarded IPs to be trusted to key clients correctly.
 app.set('trust proxy', 1);
 
-const { requireAuth } = createHttpAuthMiddleware({
-  verifyAuthToken,
-  secret: config.authSecret,
-  db,
-});
-io.use(createSocketAuthMiddleware({
-  verifyAuthToken,
-  secret: config.authSecret,
-  db,
-}));
-
 if (!config.authSecret) {
   log.error('missing_auth_secret');
+  process.exit(1);
+}
+if (Buffer.byteLength(config.authSecret, 'utf8') < 32) {
+  log.error('weak_auth_secret');
   process.exit(1);
 }
 if (!config.registrationInviteCode) {
   log.warn('registration_invite_disabled');
 }
+
+const audit = createAuditLogger({ db });
+
+const { requireAuth } = createHttpAuthMiddleware({
+  verifyAuthToken,
+  secret: config.authSecret,
+  db,
+  audit,
+  legacyTokenGraceUntil: config.legacyAuthTokenGraceUntil,
+});
+io.use(createSocketAuthMiddleware({
+  verifyAuthToken,
+  secret: config.authSecret,
+  db,
+  audit,
+  legacyTokenGraceUntil: config.legacyAuthTokenGraceUntil,
+}));
 
 // ─── Güvenlik başlıkları ──────────────────────────────────────────────────────
 app.use(helmet({
@@ -95,86 +106,24 @@ function isRateLimited(ip) {
 }
 
 app.use(express.static(config.staticDir));
+app.get('/reset-password', (_req, res) => {
+  res.sendFile(path.join(config.staticDir, 'index.html'));
+});
+app.get('/confirm-email', (_req, res) => {
+  res.sendFile(path.join(config.staticDir, 'index.html'));
+});
+app.get('/admin', (_req, res) => {
+  res.sendFile(path.join(config.staticDir, 'index.html'));
+});
+const loginThrottle = createLoginThrottle({ db, audit });
+bootstrapAdminRole({ db, config, audit, logger: log });
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.get('/api/channels', requireAuth, (_req, res) => res.json(db.getChannels()));
 app.get('/api/client-config', (_req, res) => res.json({
   iceServers: config.rtcIceServers,
-  registrationEnabled: Boolean(config.registrationInviteCode),
+  registrationEnabled: true,
 }));
-
-function sendApiError(res, status, message) {
-  res.status(status).json({ error: message });
-}
-
-app.post('/api/auth/register', limiter, (req, res) => {
-  if (!config.registrationInviteCode) {
-    return sendApiError(res, 503, 'Yeni hesap kaydı şu anda kapalı.');
-  }
-
-  const usernameCheck = validateUsername(req.body?.username);
-  if (!usernameCheck.ok) return sendApiError(res, 400, usernameCheck.message);
-
-  const passwordCheck = validatePassword(req.body?.password);
-  if (!passwordCheck.ok) return sendApiError(res, 400, passwordCheck.message);
-
-  if (req.body?.inviteCode !== config.registrationInviteCode) {
-    return sendApiError(res, 401, 'Davet kodu yanlış.');
-  }
-
-  const result = db.createAccount(usernameCheck.username, hashPassword(req.body.password));
-  if (!result.ok) {
-    return sendApiError(res, 409, `"${usernameCheck.username}" kullanıcı adı zaten kayıtlı.`);
-  }
-
-  const token = createAuthToken({
-    username: usernameCheck.username,
-    secret: config.authSecret,
-    ttlMs: config.authTokenTtlMs,
-  });
-  socketLog.info('account_registered', { username: usernameCheck.username });
-  res.status(201).json({
-    token,
-    user: { username: usernameCheck.username },
-  });
-});
-
-app.post('/api/auth/login', limiter, (req, res) => {
-  const usernameCheck = validateUsername(req.body?.username);
-  if (!usernameCheck.ok) return sendApiError(res, 400, usernameCheck.message);
-
-  const passwordCheck = validatePassword(req.body?.password);
-  if (!passwordCheck.ok) return sendApiError(res, 400, passwordCheck.message);
-
-  const account = db.getAccount(usernameCheck.username);
-  if (!account || !verifyPassword(req.body.password, account.password_hash)) {
-    return sendApiError(res, 401, 'Kullanıcı adı veya şifre yanlış.');
-  }
-
-  db.touchAccountLogin(usernameCheck.username);
-  const token = createAuthToken({
-    username: usernameCheck.username,
-    secret: config.authSecret,
-    ttlMs: config.authTokenTtlMs,
-  });
-  socketLog.info('account_logged_in', { username: usernameCheck.username });
-  res.json({
-    token,
-    user: { username: usernameCheck.username },
-  });
-});
-
-app.get('/api/auth/me', requireAuth, (req, res) => {
-  res.json({
-    user: { username: req.auth.username },
-  });
-});
-
-app.post('/api/auth/logout', requireAuth, (req, res) => {
-  db.revokeToken(req.auth.tokenId, req.auth.expiresAt);
-  socketLog.info('account_logged_out', { username: req.auth.username, tokenId: req.auth.tokenId });
-  res.status(204).end();
-});
 
 const soundCloud = createSoundCloudService({
   fetchImpl: fetch,
@@ -182,6 +131,13 @@ const soundCloud = createSoundCloudService({
   refreshMs: config.soundcloudRefreshMs,
   userAgent: config.soundcloudUserAgent,
 });
+
+db.pruneRevokedTokens();
+const pruneRevokedTokensTimer = setInterval(() => db.pruneRevokedTokens(), 6 * 60 * 60 * 1000);
+pruneRevokedTokensTimer.unref?.();
+const pruneLoginAttemptsTimer = setInterval(() => loginThrottle.prune(), 5 * 60 * 1000);
+pruneLoginAttemptsTimer.unref?.();
+
 log.info('rtc_config_loaded', {
   iceServerCount: config.rtcIceServers.length,
   custom: config.hasCustomRtcIceServers,
@@ -214,9 +170,48 @@ const {
   getActiveScreenShare,
   emitActiveScreenShareToSocket,
   endScreenShare,
+  disconnectSocket,
+  forceDisconnectUser,
   getMusicPayload,
   advanceMusicQueue,
 } = realtime;
+
+function disconnectSocketsMatching(predicate, reason = 'auth_revoked', message = 'Oturumun sonlandırıldı. Tekrar giriş yap.') {
+  let disconnected = 0;
+  for (const socket of io.of('/').sockets.values()) {
+    if (!predicate(socket)) continue;
+    disconnectSocket(socket, reason, message);
+    disconnected += 1;
+  }
+  return disconnected;
+}
+
+const authRouter = createAuthRouter({
+  db,
+  config,
+  requireAuth,
+  audit,
+  forceDisconnectUser,
+  disconnectSocketsMatching,
+  ensureAdminBootstrap: () => bootstrapAdminRole({ db, config, audit, logger: log }),
+  loginThrottle,
+  logger: socketLog,
+});
+app.use('/api', authRouter);
+
+function pruneDeletedAccounts(now = Date.now()) {
+  const deleted = db.deleteExpiredPendingAccounts(now);
+  if (deleted.length) {
+    log.info('expired_accounts_deleted', {
+      count: deleted.length,
+      usernames: deleted,
+    });
+  }
+}
+
+pruneDeletedAccounts();
+const pruneDeletedAccountsTimer = setInterval(() => pruneDeletedAccounts(), 24 * 60 * 60 * 1000);
+pruneDeletedAccountsTimer.unref?.();
 
 // ─── POKER ───────────────────────────────────────────────────────────────────
 const SMALL_BLIND      = 10;
@@ -411,6 +406,68 @@ io.on('connection', (socket) => {
     return;
   }
   socketLog.info('connected', { socketId: socket.id, ip });
+  const authRecheckTimer = setInterval(() => {
+    const token = socket.data?.auth?.token;
+    if (!token) return;
+    const resolved = resolveAuthSession({
+      token,
+      verifyAuthToken,
+      secret: config.authSecret,
+      db,
+    });
+    if (resolved.ok) return;
+    socketLog.warn('socket_session_invalidated', {
+      socketId: socket.id,
+      username: socket.data?.auth?.username || null,
+      code: resolved.code,
+    });
+    socket.emit('auth_error', { code: resolved.code, message: resolved.message });
+    socket.disconnect(true);
+  }, 5 * 60 * 1000);
+  authRecheckTimer.unref?.();
+
+  socket.on('session_refresh', ({ token }) => {
+    const resolved = resolveAuthSession({
+      token,
+      verifyAuthToken,
+      secret: config.authSecret,
+      db,
+    });
+    if (!resolved.ok) {
+      socketLog.warn('socket_session_refresh_rejected', {
+        socketId: socket.id,
+        username: socket.data?.auth?.username || null,
+        code: resolved.code,
+      });
+      socket.emit('auth_error', { code: resolved.code, message: resolved.message });
+      socket.disconnect(true);
+      return;
+    }
+
+    const previousUsername = socket.data?.auth?.username || null;
+    if (previousUsername && previousUsername !== resolved.session.username) {
+      socketLog.warn('socket_session_refresh_username_mismatch', {
+        socketId: socket.id,
+        previousUsername,
+        nextUsername: resolved.session.username,
+      });
+      socket.emit('auth_error', {
+        code: 'invalid_session',
+        message: 'Oturumun geçersiz. Tekrar giriş yap.',
+      });
+      socket.disconnect(true);
+      return;
+    }
+
+    socket.data.auth = {
+      ...resolved.session,
+      token,
+    };
+    socketLog.info('socket_session_refreshed', {
+      socketId: socket.id,
+      username: resolved.session.username,
+    });
+  });
 
   // ── Giriş ──────────────────────────────────────────────────────────────────
   socket.on('join', ({ channelId, sessionId }) => {
@@ -863,6 +920,7 @@ io.on('connection', (socket) => {
 
   // ── Bağlantı kesildi ───────────────────────────────────────────────────────
   socket.on('disconnect', () => {
+    clearInterval(authRecheckTimer);
     const user = connectedUsers.get(socket.id);
     if (user) {
       const { username, channelId } = user;
@@ -969,6 +1027,7 @@ if (require.main === module) {
 
 module.exports = {
   app,
+  bootstrapAdminRole,
   io,
   server,
   startServer,

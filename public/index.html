@@ -27,15 +27,70 @@
     </div>
     <div id="login-error"></div>
     <form id="login-form">
-      <label for="username-input">Kullanıcı Adı</label>
-      <input type="text" id="username-input" placeholder="adını gir..." maxlength="20" autocomplete="username" autofocus />
-      <label for="password-input">Şifre</label>
-      <input type="password" id="password-input" placeholder="şifreni gir..." autocomplete="current-password" />
-      <div id="invite-code-field" class="hidden">
+      <div id="username-field" class="auth-field">
+        <label for="username-input">Kullanıcı Adı</label>
+        <input type="text" id="username-input" placeholder="adını gir..." maxlength="20" autocomplete="username" autofocus />
+      </div>
+      <div id="email-field" class="auth-field hidden">
+        <label for="email-input">E-posta</label>
+        <input type="email" id="email-input" placeholder="eposta@ornek.com" autocomplete="email" />
+      </div>
+      <div id="password-field" class="auth-field">
+        <label for="password-input" id="password-input-label">Şifre</label>
+        <input type="password" id="password-input" placeholder="şifreni gir..." autocomplete="current-password" />
+      </div>
+      <div id="reset-password-confirm-field" class="auth-field hidden">
+        <label for="reset-password-confirm-input">Yeni Şifre Tekrar</label>
+        <input type="password" id="reset-password-confirm-input" placeholder="yeni şifreni tekrar gir..." autocomplete="new-password" />
+      </div>
+      <div id="invite-code-field" class="auth-field hidden">
         <label for="invite-code-input">Davet Kodu</label>
         <input type="password" id="invite-code-input" placeholder="sunucu davet kodu..." autocomplete="one-time-code" />
       </div>
+      <div id="mfa-code-field" class="auth-field hidden">
+        <label for="mfa-code-input">Doğrulama Kodu</label>
+        <input type="text" id="mfa-code-input" placeholder="000000" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+      </div>
+      <div id="mfa-recovery-field" class="auth-field hidden">
+        <label for="mfa-recovery-input">Kurtarma Kodu</label>
+        <input type="text" id="mfa-recovery-input" placeholder="XXXX-XXXX-XXXX" autocomplete="one-time-code" />
+      </div>
+      <div id="mfa-enroll-panel" class="hidden">
+        <div class="mfa-panel-head">
+          <div class="mfa-panel-title">Authenticator Uygulamanı Bağla</div>
+          <p class="login-helper">Google Authenticator, 1Password, Bitwarden veya benzeri bir TOTP uygulamasıyla aşağıdaki QR kodu tara.</p>
+        </div>
+        <div id="mfa-qr-wrap"></div>
+        <div class="mfa-secret-box">
+          <div>
+            <div class="mfa-secret-label">Elle kurulum anahtarı</div>
+            <code id="mfa-secret-value">—</code>
+          </div>
+          <button type="button" class="auth-link-btn" id="mfa-secret-copy-btn">Anahtarı Kopyala</button>
+        </div>
+        <div class="mfa-recovery-box">
+          <div class="mfa-recovery-head">
+            <div class="mfa-panel-title">Kurtarma Kodları</div>
+            <button type="button" class="auth-link-btn" id="mfa-recovery-copy-btn">Kodları Kopyala</button>
+          </div>
+          <p class="login-helper">Bu kodlar sadece bir kez gösterilir. Telefonunu kaybedersen her biri tek seferlik giriş anahtarı gibi çalışır.</p>
+          <div id="mfa-recovery-list" class="mfa-recovery-list"></div>
+          <label class="mfa-saved-check">
+            <input type="checkbox" id="mfa-recovery-saved-check" />
+            <span>Kurtarma kodlarını güvenli bir yere kaydettim.</span>
+          </label>
+        </div>
+      </div>
+      <p class="login-helper hidden" id="mfa-verify-helper">Authenticator uygulamandaki 6 haneli kodu gir. Uygulamana erişemiyorsan kurtarma koduna geçebilirsin.</p>
+      <div id="mfa-toggle-row" class="hidden">
+        <button type="button" class="auth-link-btn" id="mfa-use-recovery-btn">Kurtarma kodu kullan</button>
+        <button type="button" class="auth-link-btn hidden" id="mfa-use-app-btn">Authenticator koduna dön</button>
+      </div>
       <p class="login-helper" id="auth-helper-text">Kayıt olurken sadece bir kez davet kodu gerekir.</p>
+      <div id="auth-link-row">
+        <button type="button" class="auth-link-btn" id="forgot-password-link">Şifremi Unuttum</button>
+        <button type="button" class="auth-link-btn hidden" id="auth-back-link">Girişe Dön</button>
+      </div>
       <button type="submit" id="join-btn">Giriş Yap</button>
     </form>
   </div>
@@ -43,6 +98,7 @@
 
 <!-- ═══════════════ BAĞLANTI DURUMU ═══════════════ -->
 <div id="connection-banner" class="hidden">Bağlantı kesildi — yeniden bağlanılıyor...</div>
+<div id="email-reminder-banner" class="hidden">Şifreni unutursan kurtaramayız. Ayarlardan e-posta ekle.</div>
 
 <!-- ═══════════════ ANA UYGULAMA ═══════════════ -->
 <div id="app" class="hidden">
@@ -120,6 +176,156 @@
       <div id="settings-header">
         <span>⚙️ Ayarlar</span>
         <button id="settings-close">✕</button>
+      </div>
+      <div class="settings-section settings-account-section">
+        <div class="settings-section-title">HESABIM</div>
+        <div class="settings-account-summary">
+          <div class="settings-account-avatar" id="account-avatar-preview"></div>
+          <div class="settings-account-meta">
+            <div class="settings-account-name" id="account-display-name-preview">—</div>
+            <div class="settings-account-username" id="account-username-preview">@—</div>
+          </div>
+        </div>
+      <div id="account-pending-delete-banner" class="settings-warning hidden">
+        Bu hesap silinmek üzere işaretlendi. Tekrar giriş yaptığında otomatik geri alınır.
+      </div>
+      <div id="account-admin-entry" class="settings-inline-card hidden">
+        <div>
+          <div class="settings-opt-label">Yönetim Paneli</div>
+          <div class="settings-opt-desc">Davetleri, kullanıcıları ve güvenlik kayıtlarını yönet.</div>
+        </div>
+        <button type="button" class="settings-secondary-btn" id="account-admin-open-btn">Admin'e Git</button>
+      </div>
+    </div>
+      <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
+        <div class="settings-section-title">PROFİL</div>
+        <div class="settings-fields">
+          <label class="settings-field">
+            <span class="settings-field-label">Kullanıcı Adı</span>
+            <input type="text" id="account-username-input" readonly />
+          </label>
+          <label class="settings-field">
+            <span class="settings-field-label">Görünen Ad</span>
+            <input type="text" id="account-display-name-input" maxlength="32" placeholder="Görünen adın" />
+          </label>
+        </div>
+        <div class="settings-actions-row">
+          <button type="button" class="settings-primary-btn" id="account-display-name-save">Görünen Adı Kaydet</button>
+        </div>
+        <p class="settings-feedback" id="account-profile-feedback"></p>
+      </div>
+      <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
+        <div class="settings-section-title">ŞİFRE</div>
+        <form id="account-password-form" class="settings-form">
+          <div class="settings-fields">
+            <label class="settings-field">
+              <span class="settings-field-label">Mevcut Şifre</span>
+              <input type="password" id="account-current-password-input" autocomplete="current-password" />
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-label">Yeni Şifre</span>
+              <input type="password" id="account-new-password-input" autocomplete="new-password" />
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-label">Yeni Şifre Tekrar</span>
+              <input type="password" id="account-new-password-confirm-input" autocomplete="new-password" />
+            </label>
+          </div>
+          <div class="settings-actions-row">
+            <button type="submit" class="settings-primary-btn">Şifreyi Değiştir</button>
+          </div>
+        </form>
+        <p class="settings-feedback" id="account-password-feedback"></p>
+      </div>
+      <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
+        <div class="settings-section-title">E-POSTA</div>
+        <div class="settings-inline-card">
+          <div>
+            <div class="settings-opt-label" id="account-email-value">Henüz eklenmedi</div>
+            <div class="settings-opt-desc" id="account-email-status">Şifremi unuttum akışı için doğrulanmış e-posta gerekir.</div>
+          </div>
+          <button type="button" class="settings-secondary-btn" id="account-email-refresh-btn">Yenile</button>
+        </div>
+        <div id="account-email-warning" class="settings-warning hidden">
+          Şifreni unutursan kurtaramayız. Bir e-posta ekleyip doğrulaman iyi olur.
+        </div>
+        <form id="account-email-form" class="settings-form">
+          <div class="settings-fields">
+            <label class="settings-field">
+              <span class="settings-field-label">Yeni E-posta</span>
+              <input type="email" id="account-email-input" autocomplete="email" placeholder="eposta@ornek.com" />
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-label">Mevcut Şifre</span>
+              <input type="password" id="account-email-password-input" autocomplete="current-password" placeholder="şifren" />
+            </label>
+          </div>
+          <div class="settings-actions-row">
+            <button type="submit" class="settings-primary-btn" id="account-email-save-btn">Doğrulama Maili Gönder</button>
+          </div>
+        </form>
+        <p class="settings-feedback" id="account-email-feedback"></p>
+      </div>
+      <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
+        <div class="settings-section-title">İKİ ADIMLI DOĞRULAMA</div>
+        <div class="settings-inline-card">
+          <div>
+            <div class="settings-opt-label" id="account-2fa-status">Aktif</div>
+            <div class="settings-opt-desc" id="account-2fa-desc">Authenticator uygulaman ve kurtarma kodların hesabını korur.</div>
+          </div>
+        </div>
+        <form id="account-recovery-form" class="settings-form">
+          <div class="settings-fields">
+            <label class="settings-field">
+              <span class="settings-field-label">Mevcut Şifre</span>
+              <input type="password" id="account-recovery-password-input" autocomplete="current-password" />
+            </label>
+          </div>
+          <div class="settings-actions-row">
+            <button type="submit" class="settings-secondary-btn" id="account-recovery-regenerate-btn">Kurtarma Kodlarını Yenile</button>
+          </div>
+        </form>
+        <div id="account-recovery-result" class="settings-result hidden">
+          <div class="settings-result-label">Yeni kurtarma kodların</div>
+          <pre id="account-recovery-codes"></pre>
+          <div class="settings-actions-row">
+            <button type="button" class="settings-secondary-btn" id="account-recovery-copy-btn">Kodları Kopyala</button>
+          </div>
+        </div>
+        <p class="settings-feedback" id="account-recovery-feedback"></p>
+      </div>
+      <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
+        <div class="settings-section-title">AKTİF OTURUMLAR</div>
+        <div class="settings-actions-row settings-actions-row-spread">
+          <button type="button" class="settings-secondary-btn" id="account-sessions-refresh-btn">Listeyi Yenile</button>
+          <button type="button" class="settings-danger-btn" id="account-logout-all-btn">Tüm Cihazlardan Çıkış Yap</button>
+        </div>
+        <div id="account-sessions-empty" class="settings-empty-state hidden">Aktif oturum bulunamadı.</div>
+        <ul id="account-sessions-list" class="settings-session-list"></ul>
+        <p class="settings-feedback" id="account-sessions-feedback"></p>
+      </div>
+      <div class="settings-section settings-danger-section" style="border-top:1px solid var(--border); padding-top:16px;">
+        <div class="settings-section-title">TEHLİKELİ BÖLGE</div>
+        <details id="account-delete-details">
+          <summary>Hesabı Sil</summary>
+          <p class="settings-note">Hesap 7 gün sonra kalıcı olarak silinir. Bu işlemden sonra tekrar giriş yaparsan silme isteği geri alınır.</p>
+          <form id="account-delete-form" class="settings-form">
+            <div class="settings-fields">
+              <label class="settings-field">
+                <span class="settings-field-label">Mevcut Şifre</span>
+                <input type="password" id="account-delete-password-input" autocomplete="current-password" />
+              </label>
+              <label class="settings-field">
+                <span class="settings-field-label">Onay Metni</span>
+                <input type="text" id="account-delete-phrase-input" placeholder="HESABIMI SIL" />
+              </label>
+            </div>
+            <div class="settings-actions-row">
+              <button type="submit" class="settings-danger-btn">Silme İsteğini Başlat</button>
+            </div>
+          </form>
+          <p class="settings-feedback" id="account-delete-feedback"></p>
+        </details>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">SES GİRİŞ MODU</div>
@@ -331,6 +537,138 @@
       </form>
     </div>
 
+  </div>
+</div>
+
+<div id="admin-app" class="hidden">
+  <div id="admin-shell">
+    <header id="admin-header">
+      <div class="admin-brand">
+        <div class="admin-brand-mark">A</div>
+        <div>
+          <div class="admin-brand-title">SesApp Admin</div>
+          <div class="admin-brand-sub">Kullanıcı, davet ve güvenlik yönetimi</div>
+        </div>
+      </div>
+      <div class="admin-header-actions">
+        <div class="admin-user-summary">
+          <div id="admin-user-display">—</div>
+          <div id="admin-user-role">admin</div>
+        </div>
+        <a href="/" id="admin-back-link" class="admin-link-btn">Uygulamaya Dön</a>
+        <button type="button" id="admin-logout-btn" class="admin-ghost-btn">Çıkış Yap</button>
+      </div>
+    </header>
+
+    <div id="admin-layout">
+      <aside id="admin-sidebar">
+        <button type="button" class="admin-tab-btn active" data-admin-tab="users">Kullanıcılar</button>
+        <button type="button" class="admin-tab-btn" data-admin-tab="invites">Davetler</button>
+        <button type="button" class="admin-tab-btn" data-admin-tab="audit">Audit</button>
+      </aside>
+
+      <main id="admin-main">
+        <div id="admin-global-feedback" class="admin-feedback hidden"></div>
+
+        <section id="admin-users-panel" class="admin-panel">
+          <div class="admin-panel-header">
+            <div>
+              <h2>Kullanıcılar</h2>
+              <p>Rolleri, oturumları ve hesap durumlarını yönet.</p>
+            </div>
+            <button type="button" class="admin-secondary-btn" id="admin-users-refresh-btn">Yenile</button>
+          </div>
+          <div class="admin-toolbar">
+            <label class="admin-field">
+              <span>Ara</span>
+              <input type="search" id="admin-user-search" placeholder="@kullanici, e-posta veya görünen ad" />
+            </label>
+            <label class="admin-field">
+              <span>Durum</span>
+              <select id="admin-user-status-filter">
+                <option value="">Hepsi</option>
+                <option value="active">Aktif</option>
+                <option value="disabled">Devre Dışı</option>
+              </select>
+            </label>
+          </div>
+          <div id="admin-users-empty" class="admin-empty hidden">Gösterilecek kullanıcı yok.</div>
+          <div id="admin-users-list" class="admin-card-list"></div>
+        </section>
+
+        <section id="admin-invites-panel" class="admin-panel hidden">
+          <div class="admin-panel-header">
+            <div>
+              <h2>Davetler</h2>
+              <p>Tek kullanımlık veya çok kullanımlı davetler üret.</p>
+            </div>
+            <button type="button" class="admin-secondary-btn" id="admin-invites-refresh-btn">Yenile</button>
+          </div>
+          <form id="admin-invite-form" class="admin-form-card">
+            <div class="admin-form-grid">
+              <label class="admin-field">
+                <span>Etiket</span>
+                <input type="text" id="admin-invite-label" maxlength="80" placeholder="ör. Hasan için" />
+              </label>
+              <label class="admin-field">
+                <span>Maksimum Kullanım</span>
+                <input type="number" id="admin-invite-max-uses" min="1" max="500" value="1" />
+              </label>
+              <label class="admin-field">
+                <span>Geçerlilik (saat)</span>
+                <input type="number" id="admin-invite-ttl-hours" min="1" max="720" placeholder="boşsa süresiz" />
+              </label>
+            </div>
+            <div class="admin-form-actions">
+              <button type="submit" class="admin-primary-btn" id="admin-invite-create-btn">Davet Oluştur</button>
+            </div>
+            <div id="admin-invite-result" class="admin-result hidden">
+              <div>
+                <div class="admin-result-label">Yeni davet kodu</div>
+                <code id="admin-invite-code-value">—</code>
+              </div>
+              <button type="button" class="admin-secondary-btn" id="admin-invite-copy-btn">Kopyala</button>
+            </div>
+          </form>
+          <div id="admin-invites-empty" class="admin-empty hidden">Henüz davet yok.</div>
+          <div id="admin-invites-list" class="admin-card-list"></div>
+        </section>
+
+        <section id="admin-audit-panel" class="admin-panel hidden">
+          <div class="admin-panel-header">
+            <div>
+              <h2>Audit Kaydı</h2>
+              <p>Kim, ne zaman, hangi güvenlik aksiyonunu tetiklemiş gör.</p>
+            </div>
+            <button type="button" class="admin-secondary-btn" id="admin-audit-refresh-btn">Yenile</button>
+          </div>
+          <div class="admin-toolbar admin-toolbar-audit">
+            <label class="admin-field">
+              <span>Event</span>
+              <input type="text" id="admin-audit-event" placeholder="örn. login_fail" />
+            </label>
+            <label class="admin-field">
+              <span>Actor</span>
+              <input type="text" id="admin-audit-actor" placeholder="kullanıcı adı" />
+            </label>
+            <label class="admin-field">
+              <span>Başlangıç</span>
+              <input type="datetime-local" id="admin-audit-since" />
+            </label>
+            <label class="admin-field">
+              <span>Bitiş</span>
+              <input type="datetime-local" id="admin-audit-until" />
+            </label>
+            <label class="admin-field">
+              <span>Limit</span>
+              <input type="number" id="admin-audit-limit" min="1" max="500" value="100" />
+            </label>
+          </div>
+          <div id="admin-audit-empty" class="admin-empty hidden">Henüz audit kaydı yok.</div>
+          <div id="admin-audit-list" class="admin-audit-list"></div>
+        </section>
+      </main>
+    </div>
   </div>
 </div>
 

@@ -114,9 +114,11 @@ test('database stores real account credentials separately from user presence', (
   const dbFile = path.join(tempDir, 'chat-data.sqlite');
   const db = loadDatabase({ dbFile, legacyFile });
 
-  const created = db.createAccount('akif', 'hashed-password');
+  const created = db.createAccount('akif', 'hashed-password', { displayName: 'Akif' });
   assert.equal(created.ok, true);
   assert.equal(db.getAccount('akif').password_hash, 'hashed-password');
+  assert.equal(db.getAccount('akif').display_name, 'Akif');
+  assert.equal(db.getAccount('akif').token_version, 1);
 
   const duplicate = db.createAccount('akif', 'another-hash');
   assert.equal(duplicate.ok, false);
@@ -127,6 +129,16 @@ test('database stores real account credentials separately from user presence', (
   db.revokeToken('token-1', Date.now() + 10_000);
   assert.equal(db.isTokenRevoked('token-1'), true);
   assert.equal(db.isTokenRevoked('token-2'), false);
+  db.insertAuditLog({
+    ts: Date.now(),
+    event: 'login_ok',
+    actorUsername: 'akif',
+    targetUsername: 'akif',
+    ip: '127.0.0.1',
+    userAgent: 'test',
+    metadataJson: JSON.stringify({ source: 'test' }),
+  });
+  assert.equal(db.getAuditLog(1)[0].event, 'login_ok');
 
   cleanupDatabaseModule(db, tempDir);
 });

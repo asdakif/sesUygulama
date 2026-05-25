@@ -27,6 +27,13 @@ function readNumber(name, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function readTimestamp(name, fallback = null) {
+  const value = process.env[name];
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function normalizeIceServer(server) {
   if (!server || typeof server !== 'object') return null;
 
@@ -121,9 +128,28 @@ const envManagedTurnIceServers = buildManagedTurnIceServers(process.env);
 
 module.exports = {
   defaultPort: process.env.PORT === undefined ? 3000 : Number(process.env.PORT),
-  registrationInviteCode: process.env.REGISTRATION_INVITE || process.env.PASSWORD || '',
-  authSecret: process.env.AUTH_SECRET || process.env.PASSWORD || '',
+  legacyInviteCode: process.env.REGISTRATION_INVITE || '',
+  legacyInviteEnabled: readBoolean('LEGACY_INVITE_ENABLED', true),
+  registrationInviteCode: process.env.REGISTRATION_INVITE || '',
+  authSecret: process.env.AUTH_SECRET || '',
+  legacyAuthTokenGraceUntil: readTimestamp('LEGACY_AUTH_TOKEN_GRACE_UNTIL'),
+  accessTokenTtlMs: readNumber('ACCESS_TOKEN_TTL_MINUTES', 15) * 60 * 1000,
   authTokenTtlMs: readNumber('AUTH_TOKEN_TTL_DAYS', 30) * 24 * 60 * 60 * 1000,
+  refreshTokenTtlMs: readNumber('REFRESH_TOKEN_TTL_DAYS', 30) * 24 * 60 * 60 * 1000,
+  refreshRateWindowMs: readNumber('AUTH_REFRESH_RATE_WINDOW_MS', 60_000),
+  refreshRateMax: readNumber('AUTH_REFRESH_RATE_MAX', 60),
+  pendingTokenTtlMs: 5 * 60 * 1000,
+  mfaRequired: readBoolean('MFA_REQUIRED', true),
+  passwordResetTokenTtlMs: readNumber('PASSWORD_RESET_TOKEN_TTL_MINUTES', 60) * 60 * 1000,
+  emailVerificationTokenTtlMs: readNumber('EMAIL_VERIFICATION_TOKEN_TTL_MINUTES', 60) * 60 * 1000,
+  emailProvider: process.env.EMAIL_PROVIDER || (process.env.NODE_ENV === 'test' ? 'noop' : 'resend'),
+  emailAllowNoop: readBoolean('EMAIL_ALLOW_NOOP', process.env.NODE_ENV === 'test'),
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  smtpUrl: process.env.SMTP_URL || '',
+  emailFrom: process.env.EMAIL_FROM || '',
+  publicAppUrl: process.env.PUBLIC_APP_URL || '',
+  bootstrapAdminUsername: process.env.BOOTSTRAP_ADMIN_USERNAME || '',
+  totpIssuer: process.env.TOTP_ISSUER || 'SesApp',
   socketPingInterval: readNumber('SOCKET_PING_INTERVAL', 25_000),
   socketPingTimeout: readNumber('SOCKET_PING_TIMEOUT', 60_000),
   apiRateWindowMs: 15 * 60 * 1000,

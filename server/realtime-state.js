@@ -132,6 +132,27 @@ function createRealtimeState({ io, defaultVoiceRooms }) {
     io.to(`voice:${voiceRoom}`).emit('music_state', getMusicPayload(voiceRoom));
   }
 
+  function disconnectSocket(socket, reason = 'auth_revoked', message = 'Oturumun sonlandırıldı. Tekrar giriş yap.') {
+    if (!socket) return;
+    try {
+      socket.emit('auth_error', { code: reason, message });
+    } catch {}
+    try {
+      socket.disconnect(true);
+    } catch {}
+  }
+
+  function forceDisconnectUser(username, reason = 'auth_revoked', message = 'Oturumun sonlandırıldı. Tekrar giriş yap.') {
+    if (!username) return 0;
+    let disconnected = 0;
+    for (const socket of io.of('/').sockets.values()) {
+      if (socket.data?.auth?.username !== username) continue;
+      disconnectSocket(socket, reason, message);
+      disconnected += 1;
+    }
+    return disconnected;
+  }
+
   return {
     connectedUsers,
     voiceRooms,
@@ -150,6 +171,8 @@ function createRealtimeState({ io, defaultVoiceRooms }) {
     emitActiveScreenShareToSocket,
     findScreenShareChannelBySharer,
     endScreenShare,
+    disconnectSocket,
+    forceDisconnectUser,
     getMusicPayload,
     advanceMusicQueue,
   };
