@@ -11,8 +11,7 @@ const PASSWORD_MAX_LENGTH = 128;
 const ZERO_WIDTH_REGEX = /[\u200B-\u200D\uFEFF]/;
 const CONTROL_CHAR_REGEX = /[\u0000-\u001F\u007F]/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const TOTP_CODE_REGEX = /^\d{6}$/;
-const RECOVERY_CODE_REGEX = /^[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}$/i;
+const AUTH_CODE_REGEX = /^\d{6}$/;
 
 const breachedPasswords = new Set(fs.readFileSync(path.join(__dirname, 'breached-passwords.txt'), 'utf8')
   .split(/\r?\n/)
@@ -104,18 +103,10 @@ function validatePassword(password, context = {}) {
   return { ok: true };
 }
 
-function validateTotpCode(value) {
+function validateAuthCode(value) {
   const normalized = String(value || '').replace(/\s+/g, '').trim();
-  if (!TOTP_CODE_REGEX.test(normalized)) {
+  if (!AUTH_CODE_REGEX.test(normalized)) {
     return { ok: false, message: '6 haneli doğrulama kodunu gir.' };
-  }
-  return { ok: true, code: normalized };
-}
-
-function validateRecoveryCode(value) {
-  const normalized = String(value || '').toUpperCase().trim();
-  if (!RECOVERY_CODE_REGEX.test(normalized)) {
-    return { ok: false, message: 'Kurtarma kodu biçimi geçersiz.' };
   }
   return { ok: true, code: normalized };
 }
@@ -127,15 +118,13 @@ module.exports = {
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
   USERNAME_REGEX,
+  AUTH_CODE_REGEX,
   canonicalizeUsername,
   normalizeEmail,
   normalizeUsername,
-  RECOVERY_CODE_REGEX,
-  TOTP_CODE_REGEX,
   validateEmail,
   validateDisplayName,
+  validateAuthCode,
   validatePassword,
-  validateRecoveryCode,
-  validateTotpCode,
   validateUsername,
 };

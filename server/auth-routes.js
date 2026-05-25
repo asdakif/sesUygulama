@@ -6,22 +6,15 @@ const rateLimit = require('express-rate-limit');
 const {
   canonicalizeUsername,
   createPendingAuthToken,
-  generateOtpauthUrl,
-  generateRecoveryCodes,
-  generateSecret,
   hashPassword,
-  hashRecoveryCode,
   normalizeEmail,
-  renderQrSvg,
+  validateAuthCode,
   validateEmail,
   validateDisplayName,
   validatePassword,
-  validateRecoveryCode,
-  validateTotpCode,
   validateUsername,
   verifyPendingAuthToken,
   verifyPassword,
-  verifyTotpCode,
 } = require('./auth');
 const { createEmailService } = require('./auth/email');
 const {
@@ -198,12 +191,6 @@ function createAuthRouter({
     maxAttempts: 10,
     windowMs: 60 * 60 * 1000,
   });
-  const totpAttemptLimiter = createWindowLimiter({
-    db,
-    prefix: 'totp',
-    maxAttempts: 10,
-    windowMs: 60 * 1000,
-  });
   const emailAuthAttemptLimiter = createWindowLimiter({
     db,
     prefix: 'email-auth',
@@ -231,15 +218,8 @@ function createAuthRouter({
     },
   });
 
-  function mintRecoveryCodes(username, createdAt = Date.now()) {
-    const recoveryCodes = generateRecoveryCodes();
-    db.replaceTotpRecoveryCodes(username, recoveryCodes.map((code) => hashRecoveryCode(code)), createdAt);
-    return recoveryCodes;
-  }
-
   function getPendingRequirement(step) {
-    if (step === 'email') return 'email_code';
-    return step === 'enroll' ? 'totp_enroll' : 'totp_verify';
+    return step === 'email' ? 'email_code' : null;
   }
 
   function issuePendingChallenge(account, step, extra = {}) {
@@ -472,7 +452,7 @@ function createAuthRouter({
     db.setAccountPendingEmail(result.account.username, emailCheck.email, emailToken.tokenHash, emailExpiresAt);
 
     let registrationWarning = null;
-    const useEmailCodeMfa = config.mfaRequired && config.mfaMethod === 'email';
+    const useEmailCodeMfa = config.mfaRequired;
     if (!useEmailCodeMfa) {
       try {
         await dispatchVerificationEmail({
@@ -523,40 +503,34 @@ function createAuthRouter({
     logger.info('account_registered', { username: bootstrappedAccount.username });
 
     if (config.mfaRequired) {
-      if (config.mfaMethod === 'email') {
-        const challenge = issuePendingChallenge(bootstrappedAccount, 'email', {
-          delivery: 'email',
-          emailHint: maskEmailAddress(emailCheck.email),
+      const challenge = issuePendingChallenge(bootstrappedAccount, 'email', {
+        delivery: 'email',
+        emailHint: maskEmailAddress(emailCheck.email),
+      });
+      try {
+        await dispatchEmailAuthCode({
+          account: bootstrappedAccount,
+          email: emailCheck.email,
+          challengeId: challenge.pending_token_id,
+          req,
+          reason: 'register',
         });
-        try {
-          await dispatchEmailAuthCode({
-            account: bootstrappedAccount,
-            email: emailCheck.email,
-            challengeId: challenge.pending_token_id,
-            req,
-            reason: 'register',
-          });
-        } catch (error) {
-          registrationWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
-          audit.record('email_auth_code_send_failed', {
-            actorUsername: bootstrappedAccount.username,
-            ip: req.ip,
-            userAgent: req.get('user-agent'),
-            metadata: { reason: error?.message || 'unknown', flow: 'register' },
-          });
-          logger.warn('email_auth_code_send_failed', {
-            username: bootstrappedAccount.username,
-            error: error?.message || String(error),
-            flow: 'register',
-          });
-        }
-        return res.status(201).json({
-          ...challenge,
-          warning: registrationWarning,
+      } catch (error) {
+        registrationWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
+        audit.record('email_auth_code_send_failed', {
+          actorUsername: bootstrappedAccount.username,
+          ip: req.ip,
+          userAgent: req.get('user-agent'),
+          metadata: { reason: error?.message || 'unknown', flow: 'register' },
+        });
+        logger.warn('email_auth_code_send_failed', {
+          username: bootstrappedAccount.username,
+          error: error?.message || String(error),
+          flow: 'register',
         });
       }
       return res.status(201).json({
-        ...issuePendingChallenge(bootstrappedAccount, 'enroll'),
+        ...challenge,
         warning: registrationWarning,
       });
     }
@@ -693,58 +667,52 @@ function createAuthRouter({
       freshAccount = db.getAccount(account.username);
     }
     if (config.mfaRequired) {
-      if (config.mfaMethod === 'email') {
-        const mfaEmail = getEmailMfaAddress(freshAccount);
-        if (!mfaEmail) {
-          audit.record('login_fail', {
-            actorUsername: freshAccount.username,
-            ip: req.ip,
-            userAgent: req.get('user-agent'),
-            metadata: { reason: 'missing_mfa_email' },
-          });
-          return sendApiError(
-            res,
-            409,
-            'Bu hesap icin kullanilabilir bir e-posta bulunamadi. Yoneticiyle iletisime gec.',
-            'missing_mfa_email',
-          );
-        }
-        const challenge = issuePendingChallenge(freshAccount, 'email', {
-          delivery: 'email',
-          emailHint: maskEmailAddress(mfaEmail),
+      const mfaEmail = getEmailMfaAddress(freshAccount);
+      if (!mfaEmail) {
+        audit.record('login_fail', {
+          actorUsername: freshAccount.username,
+          ip: req.ip,
+          userAgent: req.get('user-agent'),
+          metadata: { reason: 'missing_mfa_email' },
         });
-        let loginWarning = null;
-        try {
-          await dispatchEmailAuthCode({
-            account: freshAccount,
-            email: mfaEmail,
-            challengeId: challenge.pending_token_id,
-            req,
-            reason: 'login',
-          });
-        } catch (error) {
-          loginWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
-          audit.record('email_auth_code_send_failed', {
-            actorUsername: freshAccount.username,
-            ip: req.ip,
-            userAgent: req.get('user-agent'),
-            metadata: { reason: error?.message || 'unknown', flow: 'login' },
-          });
-          logger.warn('email_auth_code_send_failed', {
-            username: freshAccount.username,
-            error: error?.message || String(error),
-            flow: 'login',
-          });
-        }
-        return res.json({
-          ...challenge,
-          warning: loginWarning,
+        return sendApiError(
+          res,
+          409,
+          'Bu hesap icin kullanilabilir bir e-posta bulunamadi. Yoneticiyle iletisime gec.',
+          'missing_mfa_email',
+        );
+      }
+      const challenge = issuePendingChallenge(freshAccount, 'email', {
+        delivery: 'email',
+        emailHint: maskEmailAddress(mfaEmail),
+      });
+      let loginWarning = null;
+      try {
+        await dispatchEmailAuthCode({
+          account: freshAccount,
+          email: mfaEmail,
+          challengeId: challenge.pending_token_id,
+          req,
+          reason: 'login',
+        });
+      } catch (error) {
+        loginWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
+        audit.record('email_auth_code_send_failed', {
+          actorUsername: freshAccount.username,
+          ip: req.ip,
+          userAgent: req.get('user-agent'),
+          metadata: { reason: error?.message || 'unknown', flow: 'login' },
+        });
+        logger.warn('email_auth_code_send_failed', {
+          username: freshAccount.username,
+          error: error?.message || String(error),
+          flow: 'login',
         });
       }
-      return res.json(issuePendingChallenge(
-        freshAccount,
-        freshAccount?.totp_enabled_at && freshAccount?.totp_secret ? 'verify' : 'enroll',
-      ));
+      return res.json({
+        ...challenge,
+        warning: loginWarning,
+      });
     }
 
     const session = sessions.issueSession({
@@ -769,202 +737,52 @@ function createAuthRouter({
     });
   });
 
-  router.post('/auth/2fa/enroll', async (req, res) => {
-    const pending = resolvePendingToken(req, ['enroll']);
+  router.post('/auth/2fa/verify', (req, res) => {
+    const pending = resolvePendingToken(req, ['email']);
     if (!pending.ok) {
       return sendApiError(res, pending.status, pending.message, pending.code);
     }
-
-    const now = Date.now();
-    const secret = generateSecret();
-    const recoveryCodes = mintRecoveryCodes(pending.account.username, now);
-    db.setAccountTotpSecret(pending.account.username, secret);
-
-    const otpauthUrl = generateOtpauthUrl({
-      issuer: config.totpIssuer,
-      username: pending.account.username,
-      secret,
-    });
-    const qrSvg = await renderQrSvg(otpauthUrl);
-
-    audit.record('totp_enrollment_started', {
-      actorUsername: pending.account.username,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      metadata: { tokenId: pending.pending.tokenId },
-    });
-
-    res.json({
-      secret_b32: secret,
-      otpauth_url: otpauthUrl,
-      qr_svg: qrSvg,
-      recovery_codes: recoveryCodes,
-    });
-  });
-
-  router.post('/auth/2fa/enroll/confirm', (req, res) => {
-    const pending = resolvePendingToken(req, ['enroll']);
-    if (!pending.ok) {
-      return sendApiError(res, pending.status, pending.message, pending.code);
-    }
-    if (!pending.account.totp_secret) {
-      return sendApiError(
-        res,
-        409,
-        'Dogrulama kurulumu yenilenmeli. Kodu tekrar olustur.',
-        'totp_secret_missing',
-      );
-    }
-
-    const codeCheck = validateTotpCode(req.body?.code);
+    const codeCheck = validateAuthCode(req.body?.code);
     if (!codeCheck.ok) {
-      return sendApiError(res, 400, codeCheck.message, 'invalid_totp_code');
+      return sendApiError(res, 400, 'E-postana gelen 6 haneli kodu gir.', 'invalid_email_code');
     }
 
-    const attempt = totpAttemptLimiter.consume(`${pending.account.username}:${pending.pending.tokenId}`);
+    const attempt = emailAuthAttemptLimiter.consume(`${pending.account.username}:${pending.pending.tokenId}`);
     if (!attempt.ok) {
       return sendApiError(
         res,
         429,
-        'Cok fazla kod denemesi yaptin. Bir dakika sonra tekrar dene.',
-        'too_many_totp_attempts',
+        'Cok fazla e-posta kodu denemesi yaptin. Bir dakika sonra tekrar dene.',
+        'too_many_email_code_attempts',
       );
     }
 
-    const verification = verifyTotpCode({
-      secret: pending.account.totp_secret,
-      code: codeCheck.code,
-      username: pending.account.username,
-    });
-    if (!verification.ok) {
-      audit.record('totp_enrollment_failed', {
+    const consumed = db.consumeEmailAuthChallenge(
+      pending.pending.tokenId,
+      hashEmailAuthCode(codeCheck.code),
+      Date.now(),
+    );
+    if (!consumed) {
+      audit.record('email_auth_code_failed', {
         actorUsername: pending.account.username,
         ip: req.ip,
         userAgent: req.get('user-agent'),
-        metadata: { reason: verification.reason || 'code_mismatch' },
       });
-      return sendApiError(
-        res,
-        verification.reason === 'replayed_code' ? 409 : 401,
-        verification.reason === 'replayed_code'
-          ? 'Bu kod zaten kullanildi. Yeni bir kod bekleyip tekrar dene.'
-          : 'Dogrulama kodu yanlis ya da suresi dolmus.',
-        verification.reason === 'replayed_code' ? 'replayed_totp_code' : 'invalid_totp_code',
-      );
+      return sendApiError(res, 401, 'E-postana gelen kod gecersiz ya da suresi dolmus.', 'invalid_email_code');
     }
 
-    const now = Date.now();
-    db.enableAccountTotp(pending.account.username, now);
+    if (pending.account.email_pending) {
+      db.confirmAccountPendingEmail(pending.account.username, Date.now());
+    } else if (pending.account.email && !pending.account.email_verified_at) {
+      db.setAccountEmail(pending.account.username, pending.account.email, Date.now());
+    }
     const freshAccount = db.getAccount(pending.account.username);
-    audit.record('totp_enrolled', {
+    audit.record('email_auth_code_verified', {
       actorUsername: pending.account.username,
       ip: req.ip,
       userAgent: req.get('user-agent'),
     });
     issueFullSession(freshAccount, req, res);
-  });
-
-  router.post('/auth/2fa/verify', (req, res) => {
-    const pending = resolvePendingToken(req, ['verify', 'email']);
-    if (!pending.ok) {
-      return sendApiError(res, pending.status, pending.message, pending.code);
-    }
-    if (pending.pending.step === 'email') {
-      const codeCheck = validateTotpCode(req.body?.code);
-      if (!codeCheck.ok) {
-        return sendApiError(res, 400, 'E-postana gelen 6 haneli kodu gir.', 'invalid_email_code');
-      }
-
-      const attempt = emailAuthAttemptLimiter.consume(`${pending.account.username}:${pending.pending.tokenId}`);
-      if (!attempt.ok) {
-        return sendApiError(
-          res,
-          429,
-          'Cok fazla e-posta kodu denemesi yaptin. Bir dakika sonra tekrar dene.',
-          'too_many_email_code_attempts',
-        );
-      }
-
-      const consumed = db.consumeEmailAuthChallenge(
-        pending.pending.tokenId,
-        hashEmailAuthCode(codeCheck.code),
-        Date.now(),
-      );
-      if (!consumed) {
-        audit.record('email_auth_code_failed', {
-          actorUsername: pending.account.username,
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-        });
-        return sendApiError(res, 401, 'E-postana gelen kod gecersiz ya da suresi dolmus.', 'invalid_email_code');
-      }
-
-      if (pending.account.email_pending) {
-        db.confirmAccountPendingEmail(pending.account.username, Date.now());
-      } else if (pending.account.email && !pending.account.email_verified_at) {
-        db.setAccountEmail(pending.account.username, pending.account.email, Date.now());
-      }
-      const freshAccount = db.getAccount(pending.account.username);
-      audit.record('email_auth_code_verified', {
-        actorUsername: pending.account.username,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-      });
-      issueFullSession(freshAccount, req, res);
-      return;
-    }
-    if (!pending.account.totp_enabled_at || !pending.account.totp_secret) {
-      return sendApiError(
-        res,
-        409,
-        'Bu hesap icin iki adimli dogrulama kurulumu tamamlanmamis. Tekrar giris yap.',
-        'totp_not_enrolled',
-      );
-    }
-
-    const codeCheck = validateTotpCode(req.body?.code);
-    if (!codeCheck.ok) {
-      return sendApiError(res, 400, codeCheck.message, 'invalid_totp_code');
-    }
-
-    const attempt = totpAttemptLimiter.consume(`${pending.account.username}:${pending.pending.tokenId}`);
-    if (!attempt.ok) {
-      return sendApiError(
-        res,
-        429,
-        'Cok fazla kod denemesi yaptin. Bir dakika sonra tekrar dene.',
-        'too_many_totp_attempts',
-      );
-    }
-
-    const verification = verifyTotpCode({
-      secret: pending.account.totp_secret,
-      code: codeCheck.code,
-      username: pending.account.username,
-    });
-    if (!verification.ok) {
-      audit.record('totp_verify_failed', {
-        actorUsername: pending.account.username,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        metadata: { reason: verification.reason || 'code_mismatch' },
-      });
-      return sendApiError(
-        res,
-        verification.reason === 'replayed_code' ? 409 : 401,
-        verification.reason === 'replayed_code'
-          ? 'Bu kod zaten kullanildi. Yeni bir kod bekleyip tekrar dene.'
-          : 'Dogrulama kodu yanlis ya da suresi dolmus.',
-        verification.reason === 'replayed_code' ? 'replayed_totp_code' : 'invalid_totp_code',
-      );
-    }
-
-    audit.record('totp_verified', {
-      actorUsername: pending.account.username,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-    });
-    issueFullSession(pending.account, req, res);
   });
 
   router.post('/auth/2fa/resend', async (req, res) => {
@@ -1011,57 +829,6 @@ function createAuthRouter({
       ok: true,
       email_hint: maskEmailAddress(mfaEmail),
     });
-  });
-
-  router.post('/auth/2fa/recovery', (req, res) => {
-    const pending = resolvePendingToken(req, ['verify']);
-    if (!pending.ok) {
-      return sendApiError(res, pending.status, pending.message, pending.code);
-    }
-    if (!pending.account.totp_enabled_at) {
-      return sendApiError(
-        res,
-        409,
-        'Bu hesap icin iki adimli dogrulama kurulumu tamamlanmamis. Tekrar giris yap.',
-        'totp_not_enrolled',
-      );
-    }
-
-    const recoveryCheck = validateRecoveryCode(req.body?.recovery_code);
-    if (!recoveryCheck.ok) {
-      return sendApiError(res, 400, recoveryCheck.message, 'invalid_recovery_code');
-    }
-
-    const attempt = totpAttemptLimiter.consume(`${pending.account.username}:recovery:${pending.pending.tokenId}`);
-    if (!attempt.ok) {
-      return sendApiError(
-        res,
-        429,
-        'Cok fazla kurtarma kodu denemesi yaptin. Bir dakika sonra tekrar dene.',
-        'too_many_recovery_attempts',
-      );
-    }
-
-    const consumed = db.consumeTotpRecoveryCode(
-      pending.account.username,
-      hashRecoveryCode(recoveryCheck.code),
-      Date.now(),
-    );
-    if (!consumed) {
-      audit.record('recovery_code_failed', {
-        actorUsername: pending.account.username,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-      });
-      return sendApiError(res, 401, 'Kurtarma kodu gecersiz ya da daha once kullanilmis.', 'invalid_recovery_code');
-    }
-
-    audit.record('recovery_code_used', {
-      actorUsername: pending.account.username,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-    });
-    issueFullSession(pending.account, req, res);
   });
 
   router.post('/auth/refresh', refreshRateLimiter, (req, res) => {
@@ -1550,36 +1317,6 @@ function createAuthRouter({
     res.json({ user: sessions.buildUserPayload(freshAccount) });
   });
 
-  router.post('/auth/2fa/regenerate-recovery', requireAuth, (req, res) => {
-    const account = db.getAccount(req.auth.username);
-    if (!account) {
-      return sendApiError(res, 401, 'Oturumun geçersiz. Tekrar giriş yap.', 'missing_account');
-    }
-    if (!account.totp_enabled_at || !account.totp_secret) {
-      return sendApiError(res, 409, 'Iki adimli dogrulama henuz aktif degil.', 'totp_not_enrolled');
-    }
-    if (typeof req.body?.current_password !== 'string' || !req.body.current_password) {
-      return sendApiError(res, 400, 'Mevcut şifre gerekli.', 'invalid_password');
-    }
-    if (!verifyPassword(req.body.current_password, account.password_hash).ok) {
-      audit.record('recovery_codes_regenerate_failed', {
-        actorUsername: req.auth.username,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        metadata: { reason: 'current_password_mismatch' },
-      });
-      return sendApiError(res, 401, 'Mevcut şifre yanlış.', 'invalid_credentials');
-    }
-
-    const recoveryCodes = mintRecoveryCodes(account.username, Date.now());
-    audit.record('recovery_codes_regenerated', {
-      actorUsername: account.username,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-    });
-    res.json({ recovery_codes: recoveryCodes });
-  });
-
   router.post('/auth/logout', requireAuth, (req, res) => {
     sessions.revokeSession({
       username: req.auth.username,
@@ -1664,7 +1401,7 @@ function createAuthRouter({
       display_name: account.display_name || account.username,
       email: account.email || null,
       role: account.role || 'user',
-      totp_enabled_at: account.totp_enabled_at || null,
+      mfa_enabled_at: account.email_verified_at || null,
       disabled_at: account.disabled_at || null,
       pending_delete_at: account.pending_delete_at || null,
       created_at: account.created_at,
@@ -1818,30 +1555,6 @@ function createAuthRouter({
       metadata: { email: emailCheck.email },
     });
     res.json({ user: sessions.buildUserPayload(db.getAccount(username)) });
-  });
-
-  router.post('/auth/2fa/reset', requireAuth, requireAdmin, (req, res) => {
-    const username = canonicalizeUsername(req.body?.username);
-    if (!username) {
-      return sendApiError(res, 400, 'Gecersiz kullanici adi.', 'invalid_username');
-    }
-    const account = db.getAccount(username);
-    if (!account) {
-      return sendApiError(res, 404, 'Kullanici bulunamadi.', 'missing_account');
-    }
-
-    const now = Date.now();
-    db.clearAccountTotp(username);
-    db.replaceTotpRecoveryCodes(username, [], now);
-    sessions.revokeAllSessionsForUser({ username, now });
-    forceDisconnectUser(username, 'totp_reset', 'Iki adimli dogrulaman sifirlandi. Tekrar giris yap.');
-    audit.record('admin_totp_reset', {
-      actorUsername: req.auth.username,
-      targetUsername: username,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-    });
-    res.status(204).end();
   });
 
   return router;

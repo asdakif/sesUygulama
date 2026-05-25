@@ -15,7 +15,6 @@ process.env.SESAPP_DATA_FILE = path.join(tempDir, 'chat-data.json');
 
 const { startServer, stopServer } = require('../server');
 const { getNoopOutbox, resetNoopOutbox } = require('../server/auth/email');
-const { generateTotpCode } = require('../server/auth');
 
 async function postJson(baseUrl, pathName, body, extraHeaders = {}) {
   const response = await fetch(`${baseUrl}${pathName}`, {
@@ -37,71 +36,23 @@ async function finalizePendingAuth({
   baseUrl,
   pendingToken,
   pendingPayload = {},
-  secret = null,
-  recoveryCode = null,
-  timeOffsetMs = 0,
 }) {
   if (!pendingToken) throw new Error('Pending token missing');
   const requirement = Array.isArray(pendingPayload.requires) ? pendingPayload.requires[0] : '';
 
-  if (requirement === 'email_code') {
-    const mail = [...getNoopOutbox()].reverse().find((item) => item.kind === 'login_code');
-    if (!mail?.code) throw new Error('Email login code was not captured');
-    const verify = await postJson(baseUrl, '/api/auth/2fa/verify', {
-      code: mail.code,
-    }, {
-      Authorization: `Bearer ${pendingToken}`,
-    });
-    if (!verify.response.ok) throw new Error(`Email code verify failed: ${verify.response.status}`);
-    return {
-      secret: null,
-      recoveryCodes: [],
-      authPayload: verify.payload,
-    };
+  if (requirement !== 'email_code') {
+    throw new Error(`Unexpected MFA requirement: ${requirement || 'none'}`);
   }
 
-  if (!secret) {
-    const enroll = await postJson(baseUrl, '/api/auth/2fa/enroll', {}, {
-      Authorization: `Bearer ${pendingToken}`,
-    });
-    if (!enroll.response.ok) throw new Error(`2FA enroll failed: ${enroll.response.status}`);
-    secret = enroll.payload.secret_b32;
-    const confirm = await postJson(baseUrl, '/api/auth/2fa/enroll/confirm', {
-      code: generateTotpCode(secret, Date.now() + timeOffsetMs),
-    }, {
-      Authorization: `Bearer ${pendingToken}`,
-    });
-    if (!confirm.response.ok) throw new Error(`2FA enroll confirm failed: ${confirm.response.status}`);
-    return {
-      secret,
-      recoveryCodes: enroll.payload.recovery_codes || [],
-      authPayload: confirm.payload,
-    };
-  }
-
-  if (recoveryCode) {
-    const recovery = await postJson(baseUrl, '/api/auth/2fa/recovery', {
-      recovery_code: recoveryCode,
-    }, {
-      Authorization: `Bearer ${pendingToken}`,
-    });
-    if (!recovery.response.ok) throw new Error(`2FA recovery failed: ${recovery.response.status}`);
-    return {
-      secret,
-      recoveryCodes: [],
-      authPayload: recovery.payload,
-    };
-  }
-
+  const mail = [...getNoopOutbox()].reverse().find((item) => item.kind === 'login_code');
+  if (!mail?.code) throw new Error('Email login code was not captured');
   const verify = await postJson(baseUrl, '/api/auth/2fa/verify', {
-    code: generateTotpCode(secret, Date.now() + timeOffsetMs),
+    code: mail.code,
   }, {
     Authorization: `Bearer ${pendingToken}`,
   });
-  if (!verify.response.ok) throw new Error(`2FA verify failed: ${verify.response.status}`);
+  if (!verify.response.ok) throw new Error(`Email code verify failed: ${verify.response.status}`);
   return {
-    secret,
-    recoveryCodes: [],
     authPayload: verify.payload,
   };
 }
@@ -129,15 +80,9 @@ async function main() {
   if (!pendingToken) throw new Error('Register response missing pending token');
 
   const enrolled = await finalizePendingAuth({ baseUrl, pendingToken, pendingPayload: registerPayload });
-  const totpSecret = enrolled.secret;
-  const firstRecoveryCode = enrolled.recoveryCodes[0];
   let accessToken = enrolled.authPayload.access_token || enrolled.authPayload.token;
   let refreshToken = enrolled.authPayload.refresh_token;
   if (!accessToken || !refreshToken) throw new Error('Enrollment response missing access/refresh tokens');
-  if (registerPayload.requires?.[0] === 'totp_enroll') {
-    if (!totpSecret) throw new Error('Enrollment secret missing');
-    if (!firstRecoveryCode) throw new Error('Recovery codes missing from enrollment');
-  }
 
   const meRes = await fetch(`${baseUrl}/api/auth/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -249,45 +194,9 @@ async function main() {
     baseUrl,
     pendingToken: newLoginRes.payload.pending_token,
     pendingPayload: newLoginRes.payload,
-    secret: totpSecret,
-    timeOffsetMs: 31_000,
   });
   if (!loginAfterReset.authPayload?.access_token || !loginAfterReset.authPayload?.refresh_token) {
     throw new Error('Login after reset did not issue full session');
-  }
-
-  if (totpSecret && firstRecoveryCode) {
-    const recoveryLoginRes = await postJson(baseUrl, '/api/auth/login', {
-      username,
-      password: nextPassword,
-    });
-    if (!recoveryLoginRes.response.ok) throw new Error(`Recovery login failed: ${recoveryLoginRes.response.status}`);
-    if (!recoveryLoginRes.payload?.pending_token) throw new Error('Recovery login missing pending token');
-
-    const recoverySession = await finalizePendingAuth({
-      baseUrl,
-      pendingToken: recoveryLoginRes.payload.pending_token,
-      pendingPayload: recoveryLoginRes.payload,
-      secret: totpSecret,
-      recoveryCode: firstRecoveryCode,
-    });
-    if (!recoverySession.authPayload?.access_token) {
-      throw new Error('Recovery code login did not issue session');
-    }
-
-    const reusedRecoveryLoginRes = await postJson(baseUrl, '/api/auth/login', {
-      username,
-      password: nextPassword,
-    });
-    if (!reusedRecoveryLoginRes.response.ok) throw new Error(`Recovery reuse login failed: ${reusedRecoveryLoginRes.response.status}`);
-    const reusedRecoveryAttempt = await postJson(baseUrl, '/api/auth/2fa/recovery', {
-      recovery_code: firstRecoveryCode,
-    }, {
-      Authorization: `Bearer ${reusedRecoveryLoginRes.payload.pending_token}`,
-    });
-    if (reusedRecoveryAttempt.response.ok) {
-      throw new Error('Recovery code should be single use');
-    }
   }
 
   await stopServer();

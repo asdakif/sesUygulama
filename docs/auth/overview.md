@@ -10,7 +10,6 @@ Relevant code:
 - [`server/auth-middleware.js`](../../server/auth-middleware.js)
 - [`server/auth/sessions.js`](../../server/auth/sessions.js)
 - [`server/auth/tokens.js`](../../server/auth/tokens.js)
-- [`server/auth/totp.js`](../../server/auth/totp.js)
 - [`database.js`](../../database.js)
 
 ## Core model
@@ -21,17 +20,16 @@ The system uses:
 - `scrypt` password hashes
 - short-lived signed access tokens
 - rotating opaque refresh tokens
-- mandatory TOTP-based 2FA
+- mandatory email-code MFA
 - audit logging for security-sensitive events
 
 ## Main login flow
 
 1. `POST /api/auth/login`
 2. Password is verified with a timing-safe fallback path for unknown usernames.
-3. If the account has no enrolled TOTP, the server returns a `pending_token` with `requires: ["totp_enroll"]`.
-4. If TOTP is already enabled, the server returns a `pending_token` with `requires: ["totp_verify"]`.
-5. The client completes `/api/auth/2fa/enroll/confirm`, `/api/auth/2fa/verify`, or `/api/auth/2fa/recovery`.
-6. On success, the server issues:
+3. The server returns a `pending_token` with `requires: ["email_code"]`.
+4. The client completes `/api/auth/2fa/verify` using the latest 6-digit code sent to the account email address.
+5. On success, the server issues:
    - `access_token`
    - `refresh_token`
    - normalized `user` payload
@@ -81,7 +79,6 @@ This is used by:
 - password change
 - password reset
 - admin disable
-- admin TOTP reset
 - refresh token reuse detection
 
 ## Legacy token cutover
@@ -104,7 +101,7 @@ Auth-specific rate limiting currently includes:
 
 - login throttling and lockout in [`server/auth/rate-limit.js`](../../server/auth/rate-limit.js)
 - forgot-password per-email and per-IP buckets
-- TOTP and recovery-code attempt buckets
+- email-code verify and resend buckets
 - dedicated refresh limiter:
   - `AUTH_REFRESH_RATE_MAX`
   - `AUTH_REFRESH_RATE_WINDOW_MS`
@@ -127,12 +124,8 @@ Auth-specific rate limiting currently includes:
 - `POST /api/auth/account/restore`
 - `POST /api/auth/forgot-password`
 - `POST /api/auth/reset-password`
-- `POST /api/auth/2fa/enroll`
-- `POST /api/auth/2fa/enroll/confirm`
 - `POST /api/auth/2fa/verify`
-- `POST /api/auth/2fa/recovery`
-- `POST /api/auth/2fa/regenerate-recovery`
-- `POST /api/auth/2fa/reset`
+- `POST /api/auth/2fa/resend`
 
 ## Storage
 
@@ -142,7 +135,7 @@ Important auth tables:
 - `refresh_tokens`
 - `revoked_access_tokens`
 - `password_reset_tokens`
-- `totp_recovery_codes`
+- `email_auth_challenges`
 - `invites`
 - `invite_redemptions`
 - `security_audit_log`
@@ -153,7 +146,7 @@ Important auth tables:
 Basic checks after deploy:
 
 1. `GET /health` returns `200`.
-2. A fresh login finishes MFA and returns both tokens.
+2. A fresh login completes email-code verification and returns both tokens.
 3. `/api/auth/refresh` rotates successfully.
 4. `/api/auth/me` works with the new access token.
 5. Audit rows are being written for login and refresh activity.

@@ -99,8 +99,6 @@ const selectAccountByUsernameStmt = db.prepare(`
     disabled_at,
     failed_login_count,
     locked_until,
-    totp_secret,
-    totp_enabled_at,
     pending_delete_at,
     created_at,
     last_login_at
@@ -125,8 +123,6 @@ const selectAccountByEmailStmt = db.prepare(`
     disabled_at,
     failed_login_count,
     locked_until,
-    totp_secret,
-    totp_enabled_at,
     pending_delete_at,
     created_at,
     last_login_at
@@ -151,8 +147,6 @@ const selectAccountByPendingEmailStmt = db.prepare(`
     disabled_at,
     failed_login_count,
     locked_until,
-    totp_secret,
-    totp_enabled_at,
     pending_delete_at,
     created_at,
     last_login_at
@@ -267,8 +261,6 @@ const selectFirstAccountStmt = db.prepare(`
     disabled_at,
     failed_login_count,
     locked_until,
-    totp_secret,
-    totp_enabled_at,
     pending_delete_at,
     created_at,
     last_login_at
@@ -297,24 +289,6 @@ const updateAccountRoleStmt = db.prepare(`
 const updateAccountDisabledAtStmt = db.prepare(`
   UPDATE accounts
   SET disabled_at = ?
-  WHERE username = ? COLLATE NOCASE
-`);
-
-const updateAccountTotpSecretStmt = db.prepare(`
-  UPDATE accounts
-  SET totp_secret = ?, totp_enabled_at = NULL
-  WHERE username = ? COLLATE NOCASE
-`);
-
-const updateAccountTotpEnabledStmt = db.prepare(`
-  UPDATE accounts
-  SET totp_enabled_at = ?
-  WHERE username = ? COLLATE NOCASE
-`);
-
-const clearAccountTotpStmt = db.prepare(`
-  UPDATE accounts
-  SET totp_secret = NULL, totp_enabled_at = NULL
   WHERE username = ? COLLATE NOCASE
 `);
 
@@ -534,29 +508,6 @@ const revokeAllRefreshTokensForUserStmt = db.prepare(`
   UPDATE refresh_tokens
   SET revoked_at = COALESCE(revoked_at, ?)
   WHERE account_username = ? COLLATE NOCASE
-`);
-
-const deleteTotpRecoveryCodesStmt = db.prepare(`
-  DELETE FROM totp_recovery_codes
-  WHERE account_username = ? COLLATE NOCASE
-`);
-
-const insertTotpRecoveryCodeStmt = db.prepare(`
-  INSERT INTO totp_recovery_codes (
-    account_username,
-    code_hash,
-    created_at,
-    used_at
-  )
-  VALUES (?, ?, ?, NULL)
-`);
-
-const consumeTotpRecoveryCodeStmt = db.prepare(`
-  UPDATE totp_recovery_codes
-  SET used_at = COALESCE(used_at, ?)
-  WHERE account_username = ? COLLATE NOCASE
-    AND code_hash = ?
-    AND used_at IS NULL
 `);
 
 const insertInviteStmt = db.prepare(`
@@ -1149,18 +1100,6 @@ module.exports = {
     updateAccountDisabledAtStmt.run(disabledAt, username);
   },
 
-  setAccountTotpSecret(username, secret) {
-    updateAccountTotpSecretStmt.run(secret, username);
-  },
-
-  enableAccountTotp(username, enabledAt = Date.now()) {
-    updateAccountTotpEnabledStmt.run(enabledAt, username);
-  },
-
-  clearAccountTotp(username) {
-    clearAccountTotpStmt.run(username);
-  },
-
   bumpTokenVersion(username) {
     bumpAccountTokenVersionStmt.run(username);
     return selectAccountTokenVersionStmt.get(username)?.token_version || null;
@@ -1219,20 +1158,6 @@ module.exports = {
   revokeAllRefreshTokensForUser(username, revokedAt = Date.now()) {
     if (!username) return;
     revokeAllRefreshTokensForUserStmt.run(revokedAt, username);
-  },
-
-  replaceTotpRecoveryCodes(username, codeHashes = [], createdAt = Date.now()) {
-    runInTransaction(() => {
-      deleteTotpRecoveryCodesStmt.run(username);
-      for (const codeHash of codeHashes) {
-        insertTotpRecoveryCodeStmt.run(username, codeHash, createdAt);
-      }
-    });
-  },
-
-  consumeTotpRecoveryCode(username, codeHash, usedAt = Date.now()) {
-    const result = consumeTotpRecoveryCodeStmt.run(usedAt, username, codeHash);
-    return (result?.changes || 0) > 0;
   },
 
   createInvite({
@@ -1455,8 +1380,8 @@ module.exports = {
         username,
         display_name,
         email,
+        email_verified_at,
         role,
-        totp_enabled_at,
         disabled_at,
         pending_delete_at,
         created_at,

@@ -6,7 +6,7 @@ const test = require('node:test');
 const {
   createIsolatedServer,
   postJson,
-  registerAndEnroll,
+  registerAndCompleteMfa,
 } = require('./helpers/integration-auth');
 
 test('refresh endpoint applies its dedicated per-ip rate limit', async (t) => {
@@ -26,14 +26,13 @@ test('refresh endpoint applies its dedicated per-ip rate limit', async (t) => {
   const baseUrl = `http://127.0.0.1:${port}`;
   const suffix = Date.now().toString(36);
 
-  const session = await registerAndEnroll({
+  const session = await registerAndCompleteMfa({
     baseUrl,
     username: `rfl_${suffix}`,
     email: `rfl_${suffix}@example.com`,
     password: 'Secret123!limit',
     inviteCode: process.env.REGISTRATION_INVITE,
     getNoopOutbox: harness.getNoopOutbox,
-    generateTotpCode: harness.generateTotpCode,
   });
 
   let refreshToken = session.refreshToken;

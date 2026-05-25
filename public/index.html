@@ -48,44 +48,11 @@
         <input type="password" id="invite-code-input" placeholder="sunucu davet kodu..." autocomplete="one-time-code" />
       </div>
       <div id="mfa-code-field" class="auth-field hidden">
-        <label for="mfa-code-input" id="mfa-code-label">Authenticator Kodu</label>
+        <label for="mfa-code-input" id="mfa-code-label">E-posta Kodu</label>
         <input type="text" id="mfa-code-input" placeholder="000000" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
       </div>
-      <div id="mfa-recovery-field" class="auth-field hidden">
-        <label for="mfa-recovery-input">Kurtarma Kodu</label>
-        <input type="text" id="mfa-recovery-input" placeholder="XXXX-XXXX-XXXX" autocomplete="one-time-code" />
-      </div>
-      <div id="mfa-enroll-panel" class="hidden">
-        <div class="mfa-panel-head">
-          <div class="mfa-panel-title">Authenticator Uygulamanı Bağla</div>
-          <p class="login-helper">Google Authenticator, 1Password, Bitwarden veya benzeri bir TOTP uygulamasıyla aşağıdaki QR kodu tara.</p>
-          <p class="login-helper">E-posta doğrulaması link ile yapılır. Burada istenen 6 haneli kod e-postadan değil, authenticator uygulamandan gelir.</p>
-        </div>
-        <div id="mfa-qr-wrap"></div>
-        <div class="mfa-secret-box">
-          <div>
-            <div class="mfa-secret-label">Elle kurulum anahtarı</div>
-            <code id="mfa-secret-value">—</code>
-          </div>
-          <button type="button" class="auth-link-btn" id="mfa-secret-copy-btn">Anahtarı Kopyala</button>
-        </div>
-        <div class="mfa-recovery-box">
-          <div class="mfa-recovery-head">
-            <div class="mfa-panel-title">Kurtarma Kodları</div>
-            <button type="button" class="auth-link-btn" id="mfa-recovery-copy-btn">Kodları Kopyala</button>
-          </div>
-          <p class="login-helper">Bu kodlar sadece bir kez gösterilir. Telefonunu kaybedersen her biri tek seferlik giriş anahtarı gibi çalışır.</p>
-          <div id="mfa-recovery-list" class="mfa-recovery-list"></div>
-          <label class="mfa-saved-check">
-            <input type="checkbox" id="mfa-recovery-saved-check" />
-            <span>Kurtarma kodlarını güvenli bir yere kaydettim.</span>
-          </label>
-        </div>
-      </div>
-      <p class="login-helper hidden" id="mfa-verify-helper">Authenticator uygulamandaki 6 haneli kodu gir. Uygulamana erişemiyorsan kurtarma koduna geçebilirsin.</p>
+      <p class="login-helper hidden" id="mfa-verify-helper">E-postana gelen 6 haneli kodu gir.</p>
       <div id="mfa-toggle-row" class="hidden">
-        <button type="button" class="auth-link-btn" id="mfa-use-recovery-btn">Kurtarma kodu kullan</button>
-        <button type="button" class="auth-link-btn hidden" id="mfa-use-app-btn">Authenticator koduna dön</button>
         <button type="button" class="auth-link-btn hidden" id="mfa-resend-btn">Kodu Tekrar Gönder</button>
       </div>
       <p class="login-helper" id="auth-helper-text">Kayıt olurken sadece bir kez davet kodu gerekir.</p>
@@ -269,32 +236,14 @@
         <p class="settings-feedback" id="account-email-feedback"></p>
       </div>
       <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
-        <div class="settings-section-title">İKİ ADIMLI DOĞRULAMA</div>
+        <div class="settings-section-title">GİRİŞ DOĞRULAMASI</div>
         <div class="settings-inline-card">
           <div>
             <div class="settings-opt-label" id="account-2fa-status">Aktif</div>
-            <div class="settings-opt-desc" id="account-2fa-desc">Authenticator uygulaman ve kurtarma kodların hesabını korur.</div>
+            <div class="settings-opt-desc" id="account-2fa-desc">Giriş yaparken 6 haneli kod e-posta adresine gönderilir.</div>
           </div>
         </div>
-        <form id="account-recovery-form" class="settings-form">
-          <div class="settings-fields">
-            <label class="settings-field">
-              <span class="settings-field-label">Mevcut Şifre</span>
-              <input type="password" id="account-recovery-password-input" autocomplete="current-password" />
-            </label>
-          </div>
-          <div class="settings-actions-row">
-            <button type="submit" class="settings-secondary-btn" id="account-recovery-regenerate-btn">Kurtarma Kodlarını Yenile</button>
-          </div>
-        </form>
-        <div id="account-recovery-result" class="settings-result hidden">
-          <div class="settings-result-label">Yeni kurtarma kodların</div>
-          <pre id="account-recovery-codes"></pre>
-          <div class="settings-actions-row">
-            <button type="button" class="settings-secondary-btn" id="account-recovery-copy-btn">Kodları Kopyala</button>
-          </div>
-        </div>
-        <p class="settings-feedback" id="account-recovery-feedback"></p>
+        <p class="settings-feedback" id="account-2fa-feedback"></p>
       </div>
       <div class="settings-section" style="border-top:1px solid var(--border); padding-top:16px;">
         <div class="settings-section-title">AKTİF OTURUMLAR</div>

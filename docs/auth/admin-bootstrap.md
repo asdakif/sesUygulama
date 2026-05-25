@@ -32,11 +32,11 @@ This avoids ambiguity when multiple accounts already exist.
 After first deploy:
 
 1. log in as the bootstrap admin
-2. complete TOTP enrollment
+2. complete the email-code verification step
 3. verify `/admin` loads
 4. create at least one invite
 5. create a second backup admin account
-6. verify both admins have working recovery codes
+6. verify both admins receive email login codes successfully
 
 ## Core admin auth actions
 
@@ -49,7 +49,6 @@ Current admin routes include:
 - `POST /api/admin/users/:username/logout-all`
 - `DELETE /api/admin/users/:username`
 - `POST /api/admin/users/:username/email-set`
-- `POST /api/auth/2fa/reset`
 - `GET /api/admin/invites`
 - `POST /api/admin/invites`
 - `DELETE /api/admin/invites/:id`
@@ -62,24 +61,9 @@ Preferred onboarding flow:
 1. admin creates an invite
 2. admin shares the raw invite code once
 3. user registers with invite + email + password
-4. user enrolls in TOTP immediately
+4. user confirms the login code sent to email immediately
 
 Keep `LEGACY_INVITE_ENABLED=false` once per-user invites are fully adopted.
-
-## 2FA reset policy
-
-Admins can reset 2FA for another user with `POST /api/auth/2fa/reset`.
-
-Before using it:
-
-1. verify the user identity out of band
-2. confirm they really lost device and recovery codes
-3. remind them that all active sessions will be dropped
-
-After reset:
-
-- the next login requires full re-enrollment
-- audit event `admin_totp_reset` is recorded
 
 ## Lost-admin scenario
 
@@ -93,5 +77,5 @@ If the only admin loses access:
 
 - keep at least two admin accounts
 - never share admin credentials
-- store recovery codes separately from the authenticator device
+- keep admin email addresses verified and monitored
 - periodically review `security_audit_log` for admin actions

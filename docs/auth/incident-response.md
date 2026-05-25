@@ -37,26 +37,21 @@ Immediate actions:
 
 1. admin runs logout-all for the user
 2. if needed, disable the account temporarily
-3. reset 2FA only after confirming identity
+3. reset login access only after confirming identity
 4. set a new password through the reset flow or by supervised recovery
 5. review:
    - email change events
    - password reset events
    - invite creation or admin changes
 
-## 3. Lost 2FA device
+## 3. Email-code delivery problems
 
 Preferred recovery:
 
-1. user logs in with a recovery code
-2. user regenerates recovery codes
-3. if device is permanently lost, re-enroll TOTP
-
-If recovery codes are also lost:
-
-1. admin verifies identity out of band
-2. admin calls `POST /api/auth/2fa/reset`
-3. user logs in again and completes fresh enrollment
+1. verify the user still controls the mailbox
+2. check recent `email_auth_code_send_failed` or provider errors
+3. ask the user to retry `Kodu Tekrar Gönder`
+4. if the mailbox changed, use the admin email-set flow only after identity verification
 
 Never disable MFA globally as a shortcut.
 

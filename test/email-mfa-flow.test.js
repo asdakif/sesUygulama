@@ -51,9 +51,9 @@ test('email MFA sends a code on register and login, and resend rotates the code'
   });
   assert.equal(meRes.status, 200);
   const mePayload = await meRes.json();
-  assert.equal(mePayload.user?.mfaMethod, 'email');
   assert.equal(mePayload.user?.email, email);
   assert.ok(mePayload.user?.emailVerifiedAt);
+  assert.ok(mePayload.user?.mfaEnabledAt);
 
   harness.resetNoopOutbox();
   const login = await postJson(baseUrl, '/api/auth/login', {

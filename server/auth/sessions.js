@@ -48,7 +48,6 @@ function createSessionManager({ db, config, audit, forceDisconnectUser = () => {
   }
 
   function buildUserPayload(account) {
-    const mfaMethod = config.mfaMethod || 'email';
     return {
       username: account.username,
       displayName: account.display_name || account.username,
@@ -56,11 +55,7 @@ function createSessionManager({ db, config, audit, forceDisconnectUser = () => {
       email: account.email || null,
       emailVerifiedAt: account.email_verified_at || null,
       emailPending: account.email_pending || null,
-      totpEnabledAt: account.totp_enabled_at || null,
-      mfaMethod,
-      mfaEnabledAt: mfaMethod === 'email'
-        ? (account.email_verified_at || account.created_at || null)
-        : (account.totp_enabled_at || null),
+      mfaEnabledAt: account.email_verified_at || null,
       pendingDeleteAt: account.pending_delete_at || null,
     };
   }

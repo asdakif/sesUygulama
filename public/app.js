@@ -274,19 +274,8 @@ const inviteCodeInput = $('invite-code-input');
 const mfaCodeField = $('mfa-code-field');
 const mfaCodeLabel = $('mfa-code-label');
 const mfaCodeInput = $('mfa-code-input');
-const mfaRecoveryField = $('mfa-recovery-field');
-const mfaRecoveryInput = $('mfa-recovery-input');
-const mfaEnrollPanel = $('mfa-enroll-panel');
-const mfaQrWrap = $('mfa-qr-wrap');
-const mfaSecretValue = $('mfa-secret-value');
-const mfaSecretCopyBtn = $('mfa-secret-copy-btn');
-const mfaRecoveryList = $('mfa-recovery-list');
-const mfaRecoverySavedCheck = $('mfa-recovery-saved-check');
-const mfaRecoveryCopyBtn = $('mfa-recovery-copy-btn');
 const mfaVerifyHelper = $('mfa-verify-helper');
 const mfaToggleRow = $('mfa-toggle-row');
-const mfaUseRecoveryBtn = $('mfa-use-recovery-btn');
-const mfaUseAppBtn = $('mfa-use-app-btn');
 const mfaResendBtn = $('mfa-resend-btn');
 const authHelperText = $('auth-helper-text');
 const loginError     = $('login-error');
@@ -368,12 +357,7 @@ const accountEmailPasswordInput = $('account-email-password-input');
 const accountEmailFeedback = $('account-email-feedback');
 const account2faStatus = $('account-2fa-status');
 const account2faDesc = $('account-2fa-desc');
-const accountRecoveryForm = $('account-recovery-form');
-const accountRecoveryPasswordInput = $('account-recovery-password-input');
-const accountRecoveryResult = $('account-recovery-result');
-const accountRecoveryCodes = $('account-recovery-codes');
-const accountRecoveryCopyBtn = $('account-recovery-copy-btn');
-const accountRecoveryFeedback = $('account-recovery-feedback');
+const account2faFeedback = $('account-2fa-feedback');
 const accountSessionsRefreshBtn = $('account-sessions-refresh-btn');
 const accountLogoutAllBtn = $('account-logout-all-btn');
 const accountSessionsEmpty = $('account-sessions-empty');
@@ -449,18 +433,15 @@ function avatarColor(u) { return `hsl(${usernameToHue(u)},65%,55%)`; }
 
 function setAuthMode(mode) {
   if (mode === 'register' && !registrationEnabled) mode = 'login';
-  if (!['login', 'register', 'forgot', 'reset', 'mfa-enroll', 'mfa-verify', 'mfa-recovery'].includes(mode)) mode = 'login';
+  if (!['login', 'register', 'forgot', 'reset', 'mfa-verify'].includes(mode)) mode = 'login';
   authMode = mode;
 
   const isRegister = authMode === 'register';
   const isForgot = authMode === 'forgot';
   const isReset = authMode === 'reset';
   const isLogin = authMode === 'login';
-  const isMfaEnroll = authMode === 'mfa-enroll';
   const isMfaVerify = authMode === 'mfa-verify';
-  const isMfaRecovery = authMode === 'mfa-recovery';
-  const isMfa = isMfaEnroll || isMfaVerify || isMfaRecovery;
-  const isEmailMfa = currentPendingAuthChallenge?.step === 'email';
+  const isMfa = isMfaVerify;
 
   loginCard?.classList.toggle('is-mfa', isMfa);
 
@@ -472,14 +453,10 @@ function setAuthMode(mode) {
   passwordField?.classList.toggle('hidden', isForgot || isMfa);
   resetPasswordConfirmField?.classList.toggle('hidden', !isReset);
   inviteCodeField?.classList.toggle('hidden', !isRegister);
-  mfaCodeField?.classList.toggle('hidden', !(isMfaEnroll || isMfaVerify));
-  mfaRecoveryField?.classList.toggle('hidden', !isMfaRecovery);
-  mfaEnrollPanel?.classList.toggle('hidden', !isMfaEnroll);
+  mfaCodeField?.classList.toggle('hidden', !isMfaVerify);
   mfaVerifyHelper?.classList.toggle('hidden', !isMfa);
-  mfaToggleRow?.classList.toggle('hidden', !(isMfaVerify || isMfaRecovery));
-  mfaUseRecoveryBtn?.classList.toggle('hidden', !isMfaVerify || isEmailMfa);
-  mfaUseAppBtn?.classList.toggle('hidden', !isMfaRecovery);
-  mfaResendBtn?.classList.toggle('hidden', !(isMfaVerify && isEmailMfa));
+  mfaToggleRow?.classList.toggle('hidden', !isMfaVerify);
+  mfaResendBtn?.classList.toggle('hidden', !isMfaVerify);
   forgotPasswordLink?.classList.toggle('hidden', !isLogin);
   authBackLink?.classList.toggle('hidden', isLogin || isRegister);
 
@@ -490,13 +467,9 @@ function setAuthMode(mode) {
         ? 'Sifirlama baglantisi e-postana gonderilsin'
         : isReset
           ? 'Yeni sifreni belirle ve tekrar giris yap'
-          : isMfaEnroll
-            ? 'Iki adimli dogrulama kurulumu gerekiyor'
-          : isMfaRecovery
-              ? 'Kurtarma koduyla giris yap'
-              : isMfaVerify
-                ? (isEmailMfa ? 'E-postana gelen kodu gir' : 'Authenticator uygulamandaki kodu gir')
-          : 'Hesabınla giriş yap ve kaldığın yerden devam et';
+          : isMfaVerify
+            ? 'E-postana gelen kodu gir'
+            : 'Hesabınla giriş yap ve kaldığın yerden devam et';
   }
   if (authHelperText) {
     authHelperText.textContent = isRegister
@@ -505,22 +478,12 @@ function setAuthMode(mode) {
         ? 'Dogrulanmis bir e-posta varsa sifirlama linki gonderilir.'
         : isReset
           ? 'Yeni sifren en az 8 karakter olmali.'
-          : isMfaEnroll
-            ? 'QR kodu tarayip authenticator uygulamandaki 6 haneli kodu asagidan dogrula. Bu ekran e-posta kodu beklemez.'
-            : isMfaRecovery
-              ? 'Authenticator uygulamana erisemiyorsan tek kullanimlik kurtarma kodunu gir.'
-              : isMfaVerify
-                ? (isEmailMfa
-                    ? `E-postana gelen 6 haneli kodu gir.${currentPendingAuthChallenge?.emailHint ? ` Kod ${currentPendingAuthChallenge.emailHint} adresine gonderildi.` : ''}`
-                    : 'Authenticator kodu 30 saniyede bir yenilenir. Gerekirse kurtarma koduna gecebilirsin.')
-          : 'Kayıt olurken seçtiğin kullanıcı adı ve şifreyle giriş yap.';
+          : isMfaVerify
+            ? `E-postana gelen 6 haneli kodu gir.${currentPendingAuthChallenge?.emailHint ? ` Kod ${currentPendingAuthChallenge.emailHint} adresine gonderildi.` : ''}`
+            : 'Kayıt olurken seçtiğin kullanıcı adı ve şifreyle giriş yap.';
   }
   if (mfaCodeLabel) {
-    mfaCodeLabel.textContent = isMfaVerify && isEmailMfa
-      ? 'E-posta Kodu'
-      : isMfaEnroll || isMfaVerify
-        ? 'Authenticator Kodu'
-        : 'Doğrulama Kodu';
+    mfaCodeLabel.textContent = isMfaVerify ? 'E-posta Kodu' : 'Doğrulama Kodu';
   }
   if (passwordInput && passwordInputLabel) {
     passwordInput.autocomplete = isRegister ? 'new-password' : 'current-password';
@@ -531,21 +494,16 @@ function setAuthMode(mode) {
   if (inviteCodeInput && !isRegister) inviteCodeInput.value = '';
   if (resetPasswordConfirmInput && !isReset) resetPasswordConfirmInput.value = '';
   if (emailInput && !isRegister && !isForgot) emailInput.value = '';
-  if (mfaCodeInput && !isMfaEnroll && !isMfaVerify) mfaCodeInput.value = '';
-  if (mfaRecoveryInput && !isMfaRecovery) mfaRecoveryInput.value = '';
+  if (mfaCodeInput && !isMfaVerify) mfaCodeInput.value = '';
   $('join-btn').textContent = isRegister
     ? 'Hesap Oluştur'
     : isForgot
       ? 'Sifirlama Linki Gonder'
       : isReset
         ? 'Sifreyi Yenile'
-        : isMfaEnroll
-          ? 'Kurulumu Tamamla'
-          : isMfaRecovery
-            ? 'Kurtarma Koduyla Gir'
-            : isMfaVerify
-              ? 'Dogrula'
-        : 'Giriş Yap';
+        : isMfaVerify
+          ? 'Dogrula'
+          : 'Giriş Yap';
   updatePendingAuthUi();
 }
 
@@ -565,67 +523,24 @@ function setLoginBusy(isBusy) {
   if (resetPasswordConfirmInput) resetPasswordConfirmInput.disabled = isBusy;
   if (inviteCodeInput) inviteCodeInput.disabled = isBusy;
   if (mfaCodeInput) mfaCodeInput.disabled = isBusy;
-  if (mfaRecoveryInput) mfaRecoveryInput.disabled = isBusy;
-  if (mfaRecoverySavedCheck) mfaRecoverySavedCheck.disabled = isBusy;
-  if (mfaSecretCopyBtn) mfaSecretCopyBtn.disabled = isBusy;
-  if (mfaRecoveryCopyBtn) mfaRecoveryCopyBtn.disabled = isBusy;
-  if (mfaUseRecoveryBtn) mfaUseRecoveryBtn.disabled = isBusy;
-  if (mfaUseAppBtn) mfaUseAppBtn.disabled = isBusy;
+  if (mfaResendBtn) mfaResendBtn.disabled = isBusy;
   if (authBackLink) authBackLink.disabled = isBusy;
   updatePendingAuthUi();
 }
 
 function clearPendingAuthChallenge() {
   currentPendingAuthChallenge = null;
-  if (mfaQrWrap) mfaQrWrap.innerHTML = '';
-  if (mfaSecretValue) mfaSecretValue.textContent = '—';
-  if (mfaRecoveryList) mfaRecoveryList.innerHTML = '';
-  if (mfaRecoverySavedCheck) mfaRecoverySavedCheck.checked = false;
   if (mfaCodeInput) mfaCodeInput.value = '';
-  if (mfaRecoveryInput) mfaRecoveryInput.value = '';
-}
-
-function renderRecoveryCodeGrid(container, codes = []) {
-  if (!container) return;
-  container.innerHTML = '';
-  const fragment = document.createDocumentFragment();
-  for (const code of codes) {
-    const item = document.createElement('div');
-    item.className = 'mfa-recovery-item';
-    item.textContent = code;
-    fragment.append(item);
-  }
-  container.append(fragment);
 }
 
 function updatePendingAuthUi() {
   const joinBtn = $('join-btn');
   const challenge = currentPendingAuthChallenge;
-  const isEmailMfa = challenge?.step === 'email';
-  if (mfaQrWrap && authMode === 'mfa-enroll') {
-    mfaQrWrap.innerHTML = challenge?.qrSvg || '';
-  }
-  if (mfaSecretValue && authMode === 'mfa-enroll') {
-    mfaSecretValue.textContent = challenge?.secretB32 || '—';
-  }
-  if (mfaRecoveryList && authMode === 'mfa-enroll') {
-    renderRecoveryCodeGrid(mfaRecoveryList, challenge?.recoveryCodes || []);
-  }
   if (mfaVerifyHelper) {
-    mfaVerifyHelper.textContent = authMode === 'mfa-recovery'
-      ? 'Kaydettigin tek kullanimlik kurtarma kodunu gir.'
-      : authMode === 'mfa-enroll'
-        ? 'Authenticator uygulamandaki ilk 6 haneli kodu girerek kurulumu tamamla. E-postaya kod gelmez.'
-        : isEmailMfa
-          ? `E-postana gelen 6 haneli kodu gir.${challenge?.emailHint ? ` Kod ${challenge.emailHint} adresine gonderildi.` : ''}`
-          : 'Authenticator uygulamandaki 6 haneli kodu gir. Uygulamaya erisemiyorsan kurtarma kodunu kullan.';
+    mfaVerifyHelper.textContent = `E-postana gelen 6 haneli kodu gir.${challenge?.emailHint ? ` Kod ${challenge.emailHint} adresine gonderildi.` : ''}`;
   }
   if (!joinBtn) return;
-  if (authMode === 'mfa-enroll') {
-    joinBtn.disabled = isLoginBusy || !challenge?.token || !challenge?.secretB32 || !mfaRecoverySavedCheck?.checked;
-  } else if (authMode === 'mfa-verify') {
-    joinBtn.disabled = isLoginBusy || !challenge?.token;
-  } else if (authMode === 'mfa-recovery') {
+  if (authMode === 'mfa-verify') {
     joinBtn.disabled = isLoginBusy || !challenge?.token;
   }
 }
@@ -635,9 +550,6 @@ function extractPendingAuthChallenge(payload = {}) {
   if (!pendingToken) return null;
   const requires = Array.isArray(payload.requires) ? payload.requires : [];
   const requirement = requires[0] || '';
-  if (requirement === 'totp_enroll') return { token: pendingToken, step: 'enroll', user: payload.user || null };
-  if (requirement === 'totp_verify') return { token: pendingToken, step: 'verify', user: payload.user || null };
-  if (requirement === 'totp_recovery') return { token: pendingToken, step: 'recovery', user: payload.user || null };
   if (requirement === 'email_code') {
     return {
       token: pendingToken,
@@ -668,25 +580,7 @@ async function beginPendingAuthFlow(payload = {}) {
   if (!pending) return false;
 
   currentPendingAuthChallenge = pending;
-
-  if (pending.step === 'enroll') {
-    const enrollPayload = await requestPendingJson('/api/auth/2fa/enroll');
-    currentPendingAuthChallenge = {
-      ...currentPendingAuthChallenge,
-      secretB32: enrollPayload.secret_b32,
-      otpauthUrl: enrollPayload.otpauth_url,
-      qrSvg: enrollPayload.qr_svg,
-      recoveryCodes: enrollPayload.recovery_codes || [],
-    };
-    if (mfaRecoverySavedCheck) mfaRecoverySavedCheck.checked = false;
-    setAuthMode('mfa-enroll');
-  } else if (pending.step === 'recovery') {
-    setAuthMode('mfa-recovery');
-  } else if (pending.step === 'email') {
-    setAuthMode('mfa-verify');
-  } else {
-    setAuthMode('mfa-verify');
-  }
+  setAuthMode('mfa-verify');
 
   if (payload?.warning) {
     setLoginStatus(payload.warning, 'error');
@@ -695,21 +589,6 @@ async function beginPendingAuthFlow(payload = {}) {
   }
   updatePendingAuthUi();
   return true;
-}
-
-function formatRecoveryCodes(codes = []) {
-  return codes.filter(Boolean).join('\n');
-}
-
-async function copyPlainText(value, successMessage, failureMessage = 'Kopyalama başarısız oldu.') {
-  try {
-    await navigator.clipboard.writeText(value);
-    setLoginStatus(successMessage, 'success');
-    return true;
-  } catch {
-    setLoginStatus(failureMessage, 'error');
-    return false;
-  }
 }
 
 function getStoredAuthToken() {
@@ -818,16 +697,12 @@ function applyCurrentUserProfile(user) {
     emailReminderBanner.classList.toggle('hidden', Boolean(currentUserProfile?.email || currentUserProfile?.emailPending) || !currentUser);
   }
   if (account2faStatus) {
-    account2faStatus.textContent = currentUserProfile?.mfaMethod === 'email'
-      ? (currentUserProfile?.mfaEnabledAt ? 'E-posta Kodu Aktif' : 'E-posta Bekleniyor')
-      : (currentUserProfile?.totpEnabledAt ? 'Aktif' : 'Kurulum Bekliyor');
+    account2faStatus.textContent = currentUserProfile?.mfaEnabledAt ? 'E-posta Kodu Aktif' : 'E-posta Bekleniyor';
   }
   if (account2faDesc) {
-    account2faDesc.textContent = currentUserProfile?.mfaMethod === 'email'
+    account2faDesc.textContent = currentUserProfile?.email
       ? 'Giris yaparken dogrulama kodu e-postana gonderilir.'
-      : (currentUserProfile?.totpEnabledAt
-          ? 'Authenticator uygulaman ve kurtarma kodların hesabını korur.'
-          : 'Bu hesap tekrar girişte authenticator kurulumu isteyecek.');
+      : 'Giris kodu alabilmek icin hesaba gecerli bir e-posta eklemelisin.';
   }
   updateAdminAccessUi();
 }
@@ -843,7 +718,7 @@ function clearAccountFeedback() {
   setSettingsFeedback(accountProfileFeedback);
   setSettingsFeedback(accountPasswordFeedback);
   setSettingsFeedback(accountEmailFeedback);
-  setSettingsFeedback(accountRecoveryFeedback);
+  setSettingsFeedback(account2faFeedback);
   setSettingsFeedback(accountSessionsFeedback);
   setSettingsFeedback(accountDeleteFeedback);
 }
@@ -959,8 +834,8 @@ function renderAdminUsers(items = []) {
       badges.append(pendingBadge);
     }
     const mfaBadge = document.createElement('span');
-    mfaBadge.className = `admin-badge ${item.totp_enabled_at ? 'mfa' : 'pending'}`.trim();
-    mfaBadge.textContent = item.totp_enabled_at ? '2FA aktif' : '2FA bekliyor';
+    mfaBadge.className = `admin-badge ${item.mfa_enabled_at ? 'mfa' : 'pending'}`.trim();
+    mfaBadge.textContent = item.mfa_enabled_at ? 'E-posta kodu aktif' : 'E-posta bekleniyor';
     badges.append(mfaBadge);
 
     head.append(titleWrap, badges);
@@ -1005,13 +880,6 @@ function renderAdminUsers(items = []) {
     emailBtn.dataset.username = item.username;
     emailBtn.textContent = 'E-posta Ata';
 
-    const totpResetBtn = document.createElement('button');
-    totpResetBtn.type = 'button';
-    totpResetBtn.className = 'admin-secondary-btn';
-    totpResetBtn.dataset.action = 'totp-reset';
-    totpResetBtn.dataset.username = item.username;
-    totpResetBtn.textContent = '2FA Sıfırla';
-
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'admin-danger-btn';
@@ -1019,7 +887,7 @@ function renderAdminUsers(items = []) {
     deleteBtn.dataset.username = item.username;
     deleteBtn.textContent = 'Silme Başlat';
 
-    actions.append(toggleDisableBtn, toggleRoleBtn, logoutAllBtn, emailBtn, totpResetBtn, deleteBtn);
+    actions.append(toggleDisableBtn, toggleRoleBtn, logoutAllBtn, emailBtn, deleteBtn);
     card.append(head, facts, actions);
     adminUsersList.append(card);
   }
@@ -2774,46 +2642,6 @@ accountEmailForm?.addEventListener('submit', async (e) => {
   }
 });
 
-accountRecoveryForm?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const currentPassword = accountRecoveryPasswordInput?.value || '';
-  if (!currentPassword) {
-    setSettingsFeedback(accountRecoveryFeedback, 'Mevcut şifren gerekli.', 'error');
-    return;
-  }
-
-  const submitBtn = accountRecoveryForm.querySelector('button[type="submit"]');
-  if (submitBtn) submitBtn.disabled = true;
-  setSettingsFeedback(accountRecoveryFeedback, '');
-
-  try {
-    const payload = await postJson('/api/auth/2fa/regenerate-recovery', {
-      current_password: currentPassword,
-    });
-    if (accountRecoveryCodes) {
-      accountRecoveryCodes.textContent = formatRecoveryCodes(payload.recovery_codes || []);
-    }
-    accountRecoveryResult?.classList.remove('hidden');
-    if (accountRecoveryPasswordInput) accountRecoveryPasswordInput.value = '';
-    setSettingsFeedback(accountRecoveryFeedback, 'Yeni kurtarma kodların üretildi. Bunları şimdi kaydet.', 'success');
-  } catch (err) {
-    setSettingsFeedback(accountRecoveryFeedback, err.message || 'Kurtarma kodları yenilenemedi.', 'error');
-  } finally {
-    if (submitBtn) submitBtn.disabled = false;
-  }
-});
-
-accountRecoveryCopyBtn?.addEventListener('click', async () => {
-  const codes = accountRecoveryCodes?.textContent?.trim() || '';
-  if (!codes) return;
-  try {
-    await navigator.clipboard.writeText(codes);
-    setSettingsFeedback(accountRecoveryFeedback, 'Kurtarma kodları panoya kopyalandı.', 'success');
-  } catch {
-    setSettingsFeedback(accountRecoveryFeedback, 'Kopyalama başarısız oldu.', 'error');
-  }
-});
-
 accountSessionsRefreshBtn?.addEventListener('click', () => {
   void loadAccountSessions();
 });
@@ -3065,23 +2893,6 @@ adminUsersList?.addEventListener('click', async (e) => {
       if (username === currentUser && payload?.user) applyCurrentUserProfile(payload.user);
       await loadAdminUsers({ silent: true });
       setAdminFeedback(`@${username} için e-posta güncellendi.`, 'success');
-      return;
-    }
-
-    if (action === 'totp-reset') {
-      const confirmed = window.confirm(`@${username} için iki adımlı doğrulamayı sıfırlamak istiyor musun?`);
-      if (!confirmed) {
-        button.disabled = false;
-        return;
-      }
-      await postJson('/api/auth/2fa/reset', { username });
-      if (username === currentUser) {
-        sessionStorage.setItem('sesappLoginError', '2FA kurulumun sıfırlandı. Tekrar giriş yap.');
-        await logoutAndReset({ revoke: false });
-        return;
-      }
-      await loadAdminUsers({ silent: true });
-      setAdminFeedback(`@${username} için 2FA sıfırlandı.`, 'success');
       return;
     }
 
@@ -3506,7 +3317,6 @@ loginForm.addEventListener('submit', async (e) => {
   const confirmPassword = resetPasswordConfirmInput?.value || '';
   const inviteCode = inviteCodeInput?.value || '';
   const mfaCode = mfaCodeInput?.value?.trim() || '';
-  const recoveryCode = mfaRecoveryInput?.value?.trim() || '';
   if ((authMode === 'login' || authMode === 'register') && !username) return;
   setLoginStatus('', 'error');
   setLoginBusy(true);
@@ -3557,38 +3367,6 @@ loginForm.addEventListener('submit', async (e) => {
     return;
   }
 
-  if (authMode === 'mfa-enroll') {
-    if (!currentPendingAuthChallenge?.token) {
-      setLoginStatus('Dogrulama oturumu bulunamadi. Tekrar giris yap.');
-      setLoginBusy(false);
-      return;
-    }
-    if (!mfaRecoverySavedCheck?.checked) {
-      setLoginStatus('Devam etmeden once kurtarma kodlarini kaydettigini onayla.');
-      setLoginBusy(false);
-      return;
-    }
-    if (!mfaCode) {
-      setLoginStatus('Authenticator uygulamandaki 6 haneli kodu gir.');
-      setLoginBusy(false);
-      return;
-    }
-    try {
-      const authPayload = await requestPendingJson('/api/auth/2fa/enroll/confirm', {
-        body: { code: mfaCode },
-      });
-      clearPendingAuthChallenge();
-      const { accessToken, refreshToken } = extractSessionTokens(authPayload);
-      await bootstrapAuthenticatedApp({ token: accessToken, refreshToken, shouldLoadSc: true });
-      setLoginBusy(false);
-      return;
-    } catch (err) {
-      setLoginStatus(err.message || 'Iki adimli dogrulama tamamlanamadi.');
-      setLoginBusy(false);
-      return;
-    }
-  }
-
   if (authMode === 'mfa-verify') {
     if (!currentPendingAuthChallenge?.token) {
       setLoginStatus('Dogrulama oturumu bulunamadi. Tekrar giris yap.');
@@ -3596,9 +3374,7 @@ loginForm.addEventListener('submit', async (e) => {
       return;
     }
     if (!mfaCode) {
-      setLoginStatus(currentPendingAuthChallenge?.step === 'email'
-        ? 'E-postana gelen 6 haneli kodu gir.'
-        : 'Authenticator uygulamandaki 6 haneli kodu gir.');
+      setLoginStatus('E-postana gelen 6 haneli kodu gir.');
       setLoginBusy(false);
       return;
     }
@@ -3613,33 +3389,6 @@ loginForm.addEventListener('submit', async (e) => {
       return;
     } catch (err) {
       setLoginStatus(err.message || 'Dogrulama basarisiz.');
-      setLoginBusy(false);
-      return;
-    }
-  }
-
-  if (authMode === 'mfa-recovery') {
-    if (!currentPendingAuthChallenge?.token) {
-      setLoginStatus('Dogrulama oturumu bulunamadi. Tekrar giris yap.');
-      setLoginBusy(false);
-      return;
-    }
-    if (!recoveryCode) {
-      setLoginStatus('Kurtarma kodunu gir.');
-      setLoginBusy(false);
-      return;
-    }
-    try {
-      const authPayload = await requestPendingJson('/api/auth/2fa/recovery', {
-        body: { recovery_code: recoveryCode },
-      });
-      clearPendingAuthChallenge();
-      const { accessToken, refreshToken } = extractSessionTokens(authPayload);
-      await bootstrapAuthenticatedApp({ token: accessToken, refreshToken, shouldLoadSc: true });
-      setLoginBusy(false);
-      return;
-    } catch (err) {
-      setLoginStatus(err.message || 'Kurtarma kodu kabul edilmedi.');
       setLoginBusy(false);
       return;
     }
@@ -3702,9 +3451,6 @@ forgotPasswordLink?.addEventListener('click', () => {
   setLoginStatus('', 'error');
   setAuthMode('forgot');
 });
-mfaRecoverySavedCheck?.addEventListener('change', () => {
-  updatePendingAuthUi();
-});
 mfaResendBtn?.addEventListener('click', async () => {
   if (isLoginBusy || currentPendingAuthChallenge?.step !== 'email') return;
   setLoginStatus('', 'error');
@@ -3722,24 +3468,6 @@ mfaResendBtn?.addEventListener('click', async () => {
     setLoginStatus(err.message || 'Kod tekrar gonderilemedi.');
   }
   setLoginBusy(false);
-});
-mfaSecretCopyBtn?.addEventListener('click', () => {
-  const value = currentPendingAuthChallenge?.secretB32 || '';
-  if (!value) return;
-  void copyPlainText(value, 'Kurulum anahtarı panoya kopyalandı.');
-});
-mfaRecoveryCopyBtn?.addEventListener('click', () => {
-  const codes = formatRecoveryCodes(currentPendingAuthChallenge?.recoveryCodes || []);
-  if (!codes) return;
-  void copyPlainText(codes, 'Kurtarma kodları panoya kopyalandı.');
-});
-mfaUseRecoveryBtn?.addEventListener('click', () => {
-  setLoginStatus('', 'error');
-  setAuthMode('mfa-recovery');
-});
-mfaUseAppBtn?.addEventListener('click', () => {
-  setLoginStatus('', 'error');
-  setAuthMode('mfa-verify');
 });
 authBackLink?.addEventListener('click', () => {
   setLoginStatus('', 'error');

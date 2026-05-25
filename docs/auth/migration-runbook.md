@@ -82,7 +82,7 @@ Immediately after deploy:
 
 1. `GET /health` returns `200`
 2. register a test user
-3. complete MFA enrollment
+3. complete email-code verification
 4. refresh the session once
 5. verify `/api/auth/me`
 6. request a password reset email
@@ -98,4 +98,4 @@ If an auth deploy goes bad:
 4. if users are mass-locked-out, temporarily extend or remove `LEGACY_AUTH_TOKEN_GRACE_UNTIL`
 5. if email is failing, switch `EMAIL_PROVIDER=noop` only in a non-production emergency and announce that resets are paused
 
-Do not delete auth tables during rollback. The system expects refresh, audit, invite, and TOTP state to remain intact.
+Do not delete auth tables during rollback. The system expects refresh, audit, invite, and email-code state to remain intact.
