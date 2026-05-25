@@ -1092,6 +1092,10 @@ module.exports = {
     clearAccountPendingDeleteStmt.run(username);
   },
 
+  deleteAccount(username) {
+    deleteUserStmt.run(username);
+  },
+
   setAccountRole(username, role) {
     updateAccountRoleStmt.run(role, username);
   },

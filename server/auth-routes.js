@@ -1495,16 +1495,16 @@ function createAuthRouter({
     const account = db.getAccount(username);
     if (!account) return sendApiError(res, 404, 'Kullanici bulunamadi.', 'missing_account');
 
-    const pendingDeleteAt = Date.now() + (7 * 24 * 60 * 60 * 1000);
-    db.scheduleAccountDelete(username, pendingDeleteAt);
-    sessions.revokeAllSessionsForUser({ username, now: Date.now() });
-    forceDisconnectUser(username, 'account_pending_delete', 'Hesabin silinmek uzere isaretlendi.');
-    audit.record('admin_account_delete_requested', {
+    const deletedAt = Date.now();
+    sessions.revokeAllSessionsForUser({ username, now: deletedAt });
+    db.deleteAccount(username);
+    forceDisconnectUser(username, 'account_deleted', 'Hesabin yonetici tarafindan kalici olarak silindi.');
+    audit.record('admin_account_deleted', {
       actorUsername: req.auth.username,
       targetUsername: username,
       ip: req.ip,
       userAgent: req.get('user-agent'),
-      metadata: { pendingDeleteAt },
+      metadata: { deletedAt },
     });
     res.status(204).end();
   });

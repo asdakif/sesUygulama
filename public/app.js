@@ -885,7 +885,7 @@ function renderAdminUsers(items = []) {
     deleteBtn.className = 'admin-danger-btn';
     deleteBtn.dataset.action = 'delete';
     deleteBtn.dataset.username = item.username;
-    deleteBtn.textContent = 'Silme Başlat';
+    deleteBtn.textContent = 'Kalıcı Sil';
 
     actions.append(toggleDisableBtn, toggleRoleBtn, logoutAllBtn, emailBtn, deleteBtn);
     card.append(head, facts, actions);
@@ -2897,10 +2897,10 @@ adminUsersList?.addEventListener('click', async (e) => {
     }
 
     if (action === 'delete') {
-      const phrase = window.prompt(`@${username} hesabını silme sürecini başlatmak için HESABIMI SIL yaz.`, '');
+      const phrase = window.prompt(`@${username} hesabını kalıcı olarak silmek için HESABIMI SIL yaz.`, '');
       if (phrase?.trim().toUpperCase() !== 'HESABIMI SIL') {
         button.disabled = false;
-        setAdminFeedback('Silme isteği iptal edildi.', 'error');
+        setAdminFeedback('Hesap silme iptal edildi.', 'error');
         return;
       }
       await requestJson(`/api/admin/users/${encodeURIComponent(username)}`, {
@@ -2910,12 +2910,12 @@ adminUsersList?.addEventListener('click', async (e) => {
         retryAuth: true,
       });
       if (username === currentUser) {
-        sessionStorage.setItem('sesappLoginError', 'Hesabın silinmek üzere işaretlendi.');
+        sessionStorage.setItem('sesappLoginError', 'Hesabın kalıcı olarak silindi.');
         await logoutAndReset({ revoke: false });
         return;
       }
       await loadAdminUsers({ silent: true });
-      setAdminFeedback(`@${username} için silme süreci başlatıldı.`, 'success');
+      setAdminFeedback(`@${username} kalıcı olarak silindi.`, 'success');
       return;
     }
   } catch (err) {

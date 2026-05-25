@@ -47,7 +47,7 @@ Current admin routes include:
 - `POST /api/admin/users/:username/enable`
 - `POST /api/admin/users/:username/role`
 - `POST /api/admin/users/:username/logout-all`
-- `DELETE /api/admin/users/:username`
+- `DELETE /api/admin/users/:username` (immediate hard delete)
 - `POST /api/admin/users/:username/email-set`
 - `GET /api/admin/invites`
 - `POST /api/admin/invites`
