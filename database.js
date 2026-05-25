@@ -479,6 +479,57 @@ const prunePasswordResetTokensStmt = db.prepare(`
   WHERE expires_at <= ? OR (used_at IS NOT NULL AND used_at <= ?)
 `);
 
+const upsertEmailAuthChallengeStmt = db.prepare(`
+  INSERT INTO email_auth_challenges (
+    challenge_id,
+    account_username,
+    email,
+    code_hash,
+    purpose,
+    created_at,
+    expires_at,
+    consumed_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+  ON CONFLICT(challenge_id) DO UPDATE SET
+    account_username = excluded.account_username,
+    email = excluded.email,
+    code_hash = excluded.code_hash,
+    purpose = excluded.purpose,
+    created_at = excluded.created_at,
+    expires_at = excluded.expires_at,
+    consumed_at = NULL
+`);
+
+const selectEmailAuthChallengeStmt = db.prepare(`
+  SELECT
+    challenge_id,
+    account_username,
+    email,
+    code_hash,
+    purpose,
+    created_at,
+    expires_at,
+    consumed_at
+  FROM email_auth_challenges
+  WHERE challenge_id = ?
+  LIMIT 1
+`);
+
+const consumeEmailAuthChallengeStmt = db.prepare(`
+  UPDATE email_auth_challenges
+  SET consumed_at = COALESCE(consumed_at, ?)
+  WHERE challenge_id = ?
+    AND code_hash = ?
+    AND consumed_at IS NULL
+    AND expires_at > ?
+`);
+
+const pruneEmailAuthChallengesStmt = db.prepare(`
+  DELETE FROM email_auth_challenges
+  WHERE expires_at <= ? OR (consumed_at IS NOT NULL AND consumed_at <= ?)
+`);
+
 const revokeAllRefreshTokensForUserStmt = db.prepare(`
   UPDATE refresh_tokens
   SET revoked_at = COALESCE(revoked_at, ?)
@@ -1248,6 +1299,36 @@ module.exports = {
     return selectActivePasswordResetTokensForUserStmt.all(username, now);
   },
 
+  upsertEmailAuthChallenge({
+    challengeId,
+    accountUsername,
+    email,
+    codeHash,
+    purpose = 'mfa',
+    createdAt = Date.now(),
+    expiresAt,
+  }) {
+    upsertEmailAuthChallengeStmt.run(
+      challengeId,
+      accountUsername,
+      email,
+      codeHash,
+      purpose,
+      createdAt,
+      expiresAt,
+    );
+  },
+
+  getEmailAuthChallenge(challengeId) {
+    if (!challengeId) return null;
+    return selectEmailAuthChallengeStmt.get(challengeId) || null;
+  },
+
+  consumeEmailAuthChallenge(challengeId, codeHash, usedAt = Date.now(), now = usedAt) {
+    const result = consumeEmailAuthChallengeStmt.run(usedAt, challengeId, codeHash, now);
+    return (result?.changes || 0) > 0;
+  },
+
   markPasswordResetTokenUsed(tokenId, usedAt = Date.now()) {
     markPasswordResetTokenUsedStmt.run(usedAt, tokenId);
   },
@@ -1282,6 +1363,7 @@ module.exports = {
     pruneRevokedTokensStmt.run(now);
     pruneRevokedAccessTokensStmt.run(now);
     prunePasswordResetTokensStmt.run(now, now);
+    pruneEmailAuthChallengesStmt.run(now, now);
   },
 
   getLoginAttempt(bucketKey) {

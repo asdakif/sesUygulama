@@ -37,6 +37,15 @@ function createNoopAdapter({ logger }) {
   return {
     mode: 'noop',
     available: true,
+    async sendLoginCode({ to, displayName, code, expiresInMin }) {
+      return capture('login_code', {
+        to,
+        displayName,
+        code,
+        expiresInMin,
+        subject: 'SesApp giris dogrulama kodu',
+      });
+    },
     async sendPasswordReset({ to, displayName, resetUrl, expiresInMin }) {
       return capture('password_reset', {
         to,
@@ -104,6 +113,17 @@ function createResendAdapter({ config, logger }) {
   return {
     mode: 'resend',
     available,
+    async sendLoginCode({ to, displayName, code, expiresInMin }) {
+      return send({
+        to,
+        subject: 'SesApp giris dogrulama kodu',
+        text: buildTextBody([
+          `Merhaba ${displayName || 'SesApp kullanicisi'},`,
+          `Girisini tamamlamak icin dogrulama kodun: ${code}`,
+          `Bu kod ${expiresInMin} dakika icinde sona erecek.`,
+        ]),
+      });
+    },
     async sendPasswordReset({ to, displayName, resetUrl, expiresInMin }) {
       return send({
         to,
@@ -169,6 +189,17 @@ function createSmtpAdapter({ config, logger }) {
   return {
     mode: 'smtp',
     available,
+    async sendLoginCode({ to, displayName, code, expiresInMin }) {
+      return send({
+        to,
+        subject: 'SesApp giris dogrulama kodu',
+        text: buildTextBody([
+          `Merhaba ${displayName || 'SesApp kullanicisi'},`,
+          `Girisini tamamlamak icin dogrulama kodun: ${code}`,
+          `Bu kod ${expiresInMin} dakika icinde sona erecek.`,
+        ]),
+      });
+    },
     async sendPasswordReset({ to, displayName, resetUrl, expiresInMin }) {
       return send({
         to,
@@ -209,6 +240,9 @@ function createUnavailableAdapter(provider) {
   return {
     mode: provider,
     available: false,
+    async sendLoginCode() {
+      throw createEmailError('email_unavailable', 'E-posta servisi henuz yapilandirilmamis.');
+    },
     async sendPasswordReset() {
       throw createEmailError('email_unavailable', 'E-posta servisi henuz yapilandirilmamis.');
     },

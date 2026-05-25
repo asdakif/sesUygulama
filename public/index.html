@@ -48,7 +48,7 @@
         <input type="password" id="invite-code-input" placeholder="sunucu davet kodu..." autocomplete="one-time-code" />
       </div>
       <div id="mfa-code-field" class="auth-field hidden">
-        <label for="mfa-code-input">Doğrulama Kodu</label>
+        <label for="mfa-code-input" id="mfa-code-label">Authenticator Kodu</label>
         <input type="text" id="mfa-code-input" placeholder="000000" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
       </div>
       <div id="mfa-recovery-field" class="auth-field hidden">
@@ -59,6 +59,7 @@
         <div class="mfa-panel-head">
           <div class="mfa-panel-title">Authenticator Uygulamanı Bağla</div>
           <p class="login-helper">Google Authenticator, 1Password, Bitwarden veya benzeri bir TOTP uygulamasıyla aşağıdaki QR kodu tara.</p>
+          <p class="login-helper">E-posta doğrulaması link ile yapılır. Burada istenen 6 haneli kod e-postadan değil, authenticator uygulamandan gelir.</p>
         </div>
         <div id="mfa-qr-wrap"></div>
         <div class="mfa-secret-box">
@@ -85,6 +86,7 @@
       <div id="mfa-toggle-row" class="hidden">
         <button type="button" class="auth-link-btn" id="mfa-use-recovery-btn">Kurtarma kodu kullan</button>
         <button type="button" class="auth-link-btn hidden" id="mfa-use-app-btn">Authenticator koduna dön</button>
+        <button type="button" class="auth-link-btn hidden" id="mfa-resend-btn">Kodu Tekrar Gönder</button>
       </div>
       <p class="login-helper" id="auth-helper-text">Kayıt olurken sadece bir kez davet kodu gerekir.</p>
       <div id="auth-link-row">

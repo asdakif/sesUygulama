@@ -36,11 +36,29 @@ async function postJson(baseUrl, pathName, body, extraHeaders = {}) {
 async function finalizePendingAuth({
   baseUrl,
   pendingToken,
+  pendingPayload = {},
   secret = null,
   recoveryCode = null,
   timeOffsetMs = 0,
 }) {
   if (!pendingToken) throw new Error('Pending token missing');
+  const requirement = Array.isArray(pendingPayload.requires) ? pendingPayload.requires[0] : '';
+
+  if (requirement === 'email_code') {
+    const mail = [...getNoopOutbox()].reverse().find((item) => item.kind === 'login_code');
+    if (!mail?.code) throw new Error('Email login code was not captured');
+    const verify = await postJson(baseUrl, '/api/auth/2fa/verify', {
+      code: mail.code,
+    }, {
+      Authorization: `Bearer ${pendingToken}`,
+    });
+    if (!verify.response.ok) throw new Error(`Email code verify failed: ${verify.response.status}`);
+    return {
+      secret: null,
+      recoveryCodes: [],
+      authPayload: verify.payload,
+    };
+  }
 
   if (!secret) {
     const enroll = await postJson(baseUrl, '/api/auth/2fa/enroll', {}, {
@@ -110,22 +128,16 @@ async function main() {
   const pendingToken = registerPayload.pending_token;
   if (!pendingToken) throw new Error('Register response missing pending token');
 
-  const enrolled = await finalizePendingAuth({ baseUrl, pendingToken });
+  const enrolled = await finalizePendingAuth({ baseUrl, pendingToken, pendingPayload: registerPayload });
   const totpSecret = enrolled.secret;
   const firstRecoveryCode = enrolled.recoveryCodes[0];
   let accessToken = enrolled.authPayload.access_token || enrolled.authPayload.token;
   let refreshToken = enrolled.authPayload.refresh_token;
   if (!accessToken || !refreshToken) throw new Error('Enrollment response missing access/refresh tokens');
-  if (!totpSecret) throw new Error('Enrollment secret missing');
-  if (!firstRecoveryCode) throw new Error('Recovery codes missing from enrollment');
-
-  const verificationMail = getNoopOutbox().find((item) => item.kind === 'email_verification' && item.to === email);
-  if (!verificationMail?.verifyUrl) throw new Error('Verification email was not captured');
-  const verificationToken = new URL(verificationMail.verifyUrl).searchParams.get('token');
-  if (!verificationToken) throw new Error('Verification token missing from email');
-
-  const confirmRes = await postJson(baseUrl, '/api/auth/change-email/confirm', { token: verificationToken });
-  if (!confirmRes.response.ok) throw new Error(`Email confirm failed: ${confirmRes.response.status}`);
+  if (registerPayload.requires?.[0] === 'totp_enroll') {
+    if (!totpSecret) throw new Error('Enrollment secret missing');
+    if (!firstRecoveryCode) throw new Error('Recovery codes missing from enrollment');
+  }
 
   const meRes = await fetch(`${baseUrl}/api/auth/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -134,6 +146,9 @@ async function main() {
   const mePayload = await meRes.json();
   if (mePayload?.user?.role !== 'admin') {
     throw new Error('First account should be bootstrapped as admin');
+  }
+  if (!mePayload?.user?.emailVerifiedAt) {
+    throw new Error('Primary account email should be verified after MFA');
   }
 
   const createInviteRes = await postJson(baseUrl, '/api/admin/invites', {
@@ -160,6 +175,7 @@ async function main() {
   await finalizePendingAuth({
     baseUrl,
     pendingToken: invitedRegisterRes.payload.pending_token,
+    pendingPayload: invitedRegisterRes.payload,
   });
 
   const refreshRes = await postJson(baseUrl, '/api/auth/refresh', { refresh_token: refreshToken });
@@ -232,6 +248,7 @@ async function main() {
   const loginAfterReset = await finalizePendingAuth({
     baseUrl,
     pendingToken: newLoginRes.payload.pending_token,
+    pendingPayload: newLoginRes.payload,
     secret: totpSecret,
     timeOffsetMs: 31_000,
   });
@@ -239,35 +256,38 @@ async function main() {
     throw new Error('Login after reset did not issue full session');
   }
 
-  const recoveryLoginRes = await postJson(baseUrl, '/api/auth/login', {
-    username,
-    password: nextPassword,
-  });
-  if (!recoveryLoginRes.response.ok) throw new Error(`Recovery login failed: ${recoveryLoginRes.response.status}`);
-  if (!recoveryLoginRes.payload?.pending_token) throw new Error('Recovery login missing pending token');
+  if (totpSecret && firstRecoveryCode) {
+    const recoveryLoginRes = await postJson(baseUrl, '/api/auth/login', {
+      username,
+      password: nextPassword,
+    });
+    if (!recoveryLoginRes.response.ok) throw new Error(`Recovery login failed: ${recoveryLoginRes.response.status}`);
+    if (!recoveryLoginRes.payload?.pending_token) throw new Error('Recovery login missing pending token');
 
-  const recoverySession = await finalizePendingAuth({
-    baseUrl,
-    pendingToken: recoveryLoginRes.payload.pending_token,
-    secret: totpSecret,
-    recoveryCode: firstRecoveryCode,
-  });
-  if (!recoverySession.authPayload?.access_token) {
-    throw new Error('Recovery code login did not issue session');
-  }
+    const recoverySession = await finalizePendingAuth({
+      baseUrl,
+      pendingToken: recoveryLoginRes.payload.pending_token,
+      pendingPayload: recoveryLoginRes.payload,
+      secret: totpSecret,
+      recoveryCode: firstRecoveryCode,
+    });
+    if (!recoverySession.authPayload?.access_token) {
+      throw new Error('Recovery code login did not issue session');
+    }
 
-  const reusedRecoveryLoginRes = await postJson(baseUrl, '/api/auth/login', {
-    username,
-    password: nextPassword,
-  });
-  if (!reusedRecoveryLoginRes.response.ok) throw new Error(`Recovery reuse login failed: ${reusedRecoveryLoginRes.response.status}`);
-  const reusedRecoveryAttempt = await postJson(baseUrl, '/api/auth/2fa/recovery', {
-    recovery_code: firstRecoveryCode,
-  }, {
-    Authorization: `Bearer ${reusedRecoveryLoginRes.payload.pending_token}`,
-  });
-  if (reusedRecoveryAttempt.response.ok) {
-    throw new Error('Recovery code should be single use');
+    const reusedRecoveryLoginRes = await postJson(baseUrl, '/api/auth/login', {
+      username,
+      password: nextPassword,
+    });
+    if (!reusedRecoveryLoginRes.response.ok) throw new Error(`Recovery reuse login failed: ${reusedRecoveryLoginRes.response.status}`);
+    const reusedRecoveryAttempt = await postJson(baseUrl, '/api/auth/2fa/recovery', {
+      recovery_code: firstRecoveryCode,
+    }, {
+      Authorization: `Bearer ${reusedRecoveryLoginRes.payload.pending_token}`,
+    });
+    if (reusedRecoveryAttempt.response.ok) {
+      throw new Error('Recovery code should be single use');
+    }
   }
 
   await stopServer();

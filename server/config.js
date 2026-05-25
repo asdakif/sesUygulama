@@ -74,6 +74,13 @@ function readBooleanFromEnv(env, name, fallback) {
   return fallback;
 }
 
+function readChoice(name, allowedValues, fallback) {
+  const value = process.env[name];
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const normalized = value.trim().toLowerCase();
+  return allowedValues.includes(normalized) ? normalized : fallback;
+}
+
 function splitCsv(rawValue) {
   if (typeof rawValue !== 'string') return [];
   return rawValue
@@ -140,6 +147,8 @@ module.exports = {
   refreshRateMax: readNumber('AUTH_REFRESH_RATE_MAX', 60),
   pendingTokenTtlMs: 5 * 60 * 1000,
   mfaRequired: readBoolean('MFA_REQUIRED', true),
+  mfaMethod: readChoice('MFA_METHOD', ['email', 'totp'], 'email'),
+  emailAuthCodeTtlMs: readNumber('EMAIL_AUTH_CODE_TTL_MINUTES', 10) * 60 * 1000,
   passwordResetTokenTtlMs: readNumber('PASSWORD_RESET_TOKEN_TTL_MINUTES', 60) * 60 * 1000,
   emailVerificationTokenTtlMs: readNumber('EMAIL_VERIFICATION_TOKEN_TTL_MINUTES', 60) * 60 * 1000,
   emailProvider: process.env.EMAIL_PROVIDER || (process.env.NODE_ENV === 'test' ? 'noop' : 'resend'),

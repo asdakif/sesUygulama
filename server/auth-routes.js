@@ -83,6 +83,23 @@ function hashBucketValue(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
 }
 
+function generateEmailAuthCode() {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
+
+function hashEmailAuthCode(code) {
+  return crypto.createHash('sha256').update(String(code || '')).digest('hex');
+}
+
+function maskEmailAddress(email) {
+  const [localPart, domainPart] = String(email || '').split('@');
+  if (!localPart || !domainPart) return '';
+  const safeLocal = localPart.length <= 2
+    ? `${localPart[0] || '*'}*`
+    : `${localPart.slice(0, 2)}${'*'.repeat(Math.max(2, localPart.length - 2))}`;
+  return `${safeLocal}@${domainPart}`;
+}
+
 const INVITE_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
 
 function generateInviteCode() {
@@ -187,6 +204,18 @@ function createAuthRouter({
     maxAttempts: 10,
     windowMs: 60 * 1000,
   });
+  const emailAuthAttemptLimiter = createWindowLimiter({
+    db,
+    prefix: 'email-auth',
+    maxAttempts: 10,
+    windowMs: 60 * 1000,
+  });
+  const emailAuthResendLimiter = createWindowLimiter({
+    db,
+    prefix: 'email-auth-resend',
+    maxAttempts: 5,
+    windowMs: 10 * 60 * 1000,
+  });
   const refreshRateLimiter = rateLimit({
     windowMs: config.refreshRateWindowMs,
     max: config.refreshRateMax,
@@ -208,16 +237,26 @@ function createAuthRouter({
     return recoveryCodes;
   }
 
-  function issuePendingChallenge(account, step) {
+  function getPendingRequirement(step) {
+    if (step === 'email') return 'email_code';
+    return step === 'enroll' ? 'totp_enroll' : 'totp_verify';
+  }
+
+  function issuePendingChallenge(account, step, extra = {}) {
+    const tokenId = crypto.randomUUID();
     return {
       pending_token: createPendingAuthToken({
         username: account.username,
         step,
         secret: config.authSecret,
         ttlMs: config.pendingTokenTtlMs,
+        tokenId,
       }),
-      requires: [step === 'enroll' ? 'totp_enroll' : 'totp_verify'],
+      requires: [getPendingRequirement(step)],
       user: sessions.buildUserPayload(account),
+      delivery: extra.delivery || null,
+      email_hint: extra.emailHint || null,
+      pending_token_id: tokenId,
     };
   }
 
@@ -353,6 +392,36 @@ function createAuthRouter({
     });
   }
 
+  function getEmailMfaAddress(account) {
+    return account?.email || account?.email_pending || null;
+  }
+
+  async function dispatchEmailAuthCode({ account, email, challengeId, req, reason = 'login' }) {
+    const now = Date.now();
+    const code = generateEmailAuthCode();
+    db.upsertEmailAuthChallenge({
+      challengeId,
+      accountUsername: account.username,
+      email,
+      codeHash: hashEmailAuthCode(code),
+      purpose: reason,
+      createdAt: now,
+      expiresAt: now + config.emailAuthCodeTtlMs,
+    });
+    await emailService.sendLoginCode({
+      to: email,
+      displayName: account.display_name || account.username,
+      code,
+      expiresInMin: Math.round(config.emailAuthCodeTtlMs / 60_000),
+    });
+    audit.record('email_auth_code_requested', {
+      actorUsername: account.username,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      metadata: { reason, email },
+    });
+  }
+
   router.post('/auth/register', async (req, res) => {
     const inviteCode = typeof req.body?.inviteCode === 'string' ? req.body.inviteCode.trim() : '';
     const canUseLegacyInvite = config.legacyInviteEnabled && config.registrationInviteCode;
@@ -403,25 +472,28 @@ function createAuthRouter({
     db.setAccountPendingEmail(result.account.username, emailCheck.email, emailToken.tokenHash, emailExpiresAt);
 
     let registrationWarning = null;
-    try {
-      await dispatchVerificationEmail({
-        account: result.account,
-        email: emailCheck.email,
-        token: emailToken.token,
-        req,
-      });
-    } catch (error) {
-      registrationWarning = 'Dogrulama e-postasi su an gonderilemedi. Ayarlardan tekrar deneyebilirsin.';
-      audit.record('email_verification_send_failed', {
-        actorUsername: result.account.username,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        metadata: { reason: error?.message || 'unknown' },
-      });
-      logger.warn('email_verification_send_failed', {
-        username: result.account.username,
-        error: error?.message || String(error),
-      });
+    const useEmailCodeMfa = config.mfaRequired && config.mfaMethod === 'email';
+    if (!useEmailCodeMfa) {
+      try {
+        await dispatchVerificationEmail({
+          account: result.account,
+          email: emailCheck.email,
+          token: emailToken.token,
+          req,
+        });
+      } catch (error) {
+        registrationWarning = 'Dogrulama e-postasi su an gonderilemedi. Ayarlardan tekrar deneyebilirsin.';
+        audit.record('email_verification_send_failed', {
+          actorUsername: result.account.username,
+          ip: req.ip,
+          userAgent: req.get('user-agent'),
+          metadata: { reason: error?.message || 'unknown' },
+        });
+        logger.warn('email_verification_send_failed', {
+          username: result.account.username,
+          error: error?.message || String(error),
+        });
+      }
     }
 
     ensureAdminBootstrap();
@@ -439,16 +511,50 @@ function createAuthRouter({
       userAgent: req.get('user-agent'),
       metadata: { mode: useLegacyInvite ? 'legacy' : 'invite' },
     });
-    audit.record('email_verification_requested', {
-      actorUsername: bootstrappedAccount.username,
-      targetUsername: bootstrappedAccount.username,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      metadata: { email: emailCheck.email },
-    });
+    if (!useEmailCodeMfa) {
+      audit.record('email_verification_requested', {
+        actorUsername: bootstrappedAccount.username,
+        targetUsername: bootstrappedAccount.username,
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+        metadata: { email: emailCheck.email },
+      });
+    }
     logger.info('account_registered', { username: bootstrappedAccount.username });
 
     if (config.mfaRequired) {
+      if (config.mfaMethod === 'email') {
+        const challenge = issuePendingChallenge(bootstrappedAccount, 'email', {
+          delivery: 'email',
+          emailHint: maskEmailAddress(emailCheck.email),
+        });
+        try {
+          await dispatchEmailAuthCode({
+            account: bootstrappedAccount,
+            email: emailCheck.email,
+            challengeId: challenge.pending_token_id,
+            req,
+            reason: 'register',
+          });
+        } catch (error) {
+          registrationWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
+          audit.record('email_auth_code_send_failed', {
+            actorUsername: bootstrappedAccount.username,
+            ip: req.ip,
+            userAgent: req.get('user-agent'),
+            metadata: { reason: error?.message || 'unknown', flow: 'register' },
+          });
+          logger.warn('email_auth_code_send_failed', {
+            username: bootstrappedAccount.username,
+            error: error?.message || String(error),
+            flow: 'register',
+          });
+        }
+        return res.status(201).json({
+          ...challenge,
+          warning: registrationWarning,
+        });
+      }
       return res.status(201).json({
         ...issuePendingChallenge(bootstrappedAccount, 'enroll'),
         warning: registrationWarning,
@@ -587,6 +693,54 @@ function createAuthRouter({
       freshAccount = db.getAccount(account.username);
     }
     if (config.mfaRequired) {
+      if (config.mfaMethod === 'email') {
+        const mfaEmail = getEmailMfaAddress(freshAccount);
+        if (!mfaEmail) {
+          audit.record('login_fail', {
+            actorUsername: freshAccount.username,
+            ip: req.ip,
+            userAgent: req.get('user-agent'),
+            metadata: { reason: 'missing_mfa_email' },
+          });
+          return sendApiError(
+            res,
+            409,
+            'Bu hesap icin kullanilabilir bir e-posta bulunamadi. Yoneticiyle iletisime gec.',
+            'missing_mfa_email',
+          );
+        }
+        const challenge = issuePendingChallenge(freshAccount, 'email', {
+          delivery: 'email',
+          emailHint: maskEmailAddress(mfaEmail),
+        });
+        let loginWarning = null;
+        try {
+          await dispatchEmailAuthCode({
+            account: freshAccount,
+            email: mfaEmail,
+            challengeId: challenge.pending_token_id,
+            req,
+            reason: 'login',
+          });
+        } catch (error) {
+          loginWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
+          audit.record('email_auth_code_send_failed', {
+            actorUsername: freshAccount.username,
+            ip: req.ip,
+            userAgent: req.get('user-agent'),
+            metadata: { reason: error?.message || 'unknown', flow: 'login' },
+          });
+          logger.warn('email_auth_code_send_failed', {
+            username: freshAccount.username,
+            error: error?.message || String(error),
+            flow: 'login',
+          });
+        }
+        return res.json({
+          ...challenge,
+          warning: loginWarning,
+        });
+      }
       return res.json(issuePendingChallenge(
         freshAccount,
         freshAccount?.totp_enabled_at && freshAccount?.totp_secret ? 'verify' : 'enroll',
@@ -711,9 +865,53 @@ function createAuthRouter({
   });
 
   router.post('/auth/2fa/verify', (req, res) => {
-    const pending = resolvePendingToken(req, ['verify']);
+    const pending = resolvePendingToken(req, ['verify', 'email']);
     if (!pending.ok) {
       return sendApiError(res, pending.status, pending.message, pending.code);
+    }
+    if (pending.pending.step === 'email') {
+      const codeCheck = validateTotpCode(req.body?.code);
+      if (!codeCheck.ok) {
+        return sendApiError(res, 400, 'E-postana gelen 6 haneli kodu gir.', 'invalid_email_code');
+      }
+
+      const attempt = emailAuthAttemptLimiter.consume(`${pending.account.username}:${pending.pending.tokenId}`);
+      if (!attempt.ok) {
+        return sendApiError(
+          res,
+          429,
+          'Cok fazla e-posta kodu denemesi yaptin. Bir dakika sonra tekrar dene.',
+          'too_many_email_code_attempts',
+        );
+      }
+
+      const consumed = db.consumeEmailAuthChallenge(
+        pending.pending.tokenId,
+        hashEmailAuthCode(codeCheck.code),
+        Date.now(),
+      );
+      if (!consumed) {
+        audit.record('email_auth_code_failed', {
+          actorUsername: pending.account.username,
+          ip: req.ip,
+          userAgent: req.get('user-agent'),
+        });
+        return sendApiError(res, 401, 'E-postana gelen kod gecersiz ya da suresi dolmus.', 'invalid_email_code');
+      }
+
+      if (pending.account.email_pending) {
+        db.confirmAccountPendingEmail(pending.account.username, Date.now());
+      } else if (pending.account.email && !pending.account.email_verified_at) {
+        db.setAccountEmail(pending.account.username, pending.account.email, Date.now());
+      }
+      const freshAccount = db.getAccount(pending.account.username);
+      audit.record('email_auth_code_verified', {
+        actorUsername: pending.account.username,
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      issueFullSession(freshAccount, req, res);
+      return;
     }
     if (!pending.account.totp_enabled_at || !pending.account.totp_secret) {
       return sendApiError(
@@ -767,6 +965,52 @@ function createAuthRouter({
       userAgent: req.get('user-agent'),
     });
     issueFullSession(pending.account, req, res);
+  });
+
+  router.post('/auth/2fa/resend', async (req, res) => {
+    const pending = resolvePendingToken(req, ['email']);
+    if (!pending.ok) {
+      return sendApiError(res, pending.status, pending.message, pending.code);
+    }
+    const mfaEmail = getEmailMfaAddress(pending.account);
+    if (!mfaEmail) {
+      return sendApiError(res, 409, 'Bu hesap icin kullanilabilir bir e-posta bulunamadi.', 'missing_mfa_email');
+    }
+    const attempt = emailAuthResendLimiter.consume(`${pending.account.username}:${hashBucketValue(req.ip)}`);
+    if (!attempt.ok) {
+      return sendApiError(
+        res,
+        429,
+        'Cok sik kod istedin. Biraz sonra tekrar dene.',
+        'too_many_email_code_resends',
+      );
+    }
+    try {
+      await dispatchEmailAuthCode({
+        account: pending.account,
+        email: mfaEmail,
+        challengeId: pending.pending.tokenId,
+        req,
+        reason: 'resend',
+      });
+    } catch (error) {
+      audit.record('email_auth_code_send_failed', {
+        actorUsername: pending.account.username,
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+        metadata: { reason: error?.message || 'unknown', flow: 'resend' },
+      });
+      logger.warn('email_auth_code_send_failed', {
+        username: pending.account.username,
+        error: error?.message || String(error),
+        flow: 'resend',
+      });
+      return sendApiError(res, 503, 'Kod e-postasi su an gonderilemedi.', 'email_code_send_failed');
+    }
+    res.json({
+      ok: true,
+      email_hint: maskEmailAddress(mfaEmail),
+    });
   });
 
   router.post('/auth/2fa/recovery', (req, res) => {

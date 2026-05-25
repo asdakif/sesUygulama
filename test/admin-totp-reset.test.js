@@ -10,7 +10,7 @@ const {
 } = require('./helpers/integration-auth');
 
 test('admin can reset another user totp state and force re-enrollment', async (t) => {
-  const harness = createIsolatedServer('sesapp-admin-totp-reset-');
+  const harness = createIsolatedServer('sesapp-admin-totp-reset-', { mfaMethod: 'totp' });
   t.after(async () => {
     await harness.stopServer().catch(() => {});
     harness.cleanup();

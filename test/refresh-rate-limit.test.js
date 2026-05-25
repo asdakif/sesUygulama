@@ -32,6 +32,7 @@ test('refresh endpoint applies its dedicated per-ip rate limit', async (t) => {
     email: `rfl_${suffix}@example.com`,
     password: 'Secret123!limit',
     inviteCode: process.env.REGISTRATION_INVITE,
+    getNoopOutbox: harness.getNoopOutbox,
     generateTotpCode: harness.generateTotpCode,
   });
 

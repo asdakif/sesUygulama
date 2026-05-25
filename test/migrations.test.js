@@ -40,15 +40,21 @@ test('migration runner applies full auth schema and bumps user_version', () => {
     FROM sqlite_master
     WHERE type = 'table' AND name = 'refresh_tokens'
   `).get().count;
+  const emailChallengeTableCount = rawDb.prepare(`
+    SELECT COUNT(*) AS count
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'email_auth_challenges'
+  `).get().count;
   rawDb.close();
 
-  assert.equal(version, 10);
+  assert.equal(version, 11);
   assert.ok(accountColumns.includes('display_name'));
   assert.ok(accountColumns.includes('token_version'));
   assert.ok(accountColumns.includes('locked_until'));
   assert.ok(accountColumns.includes('email'));
   assert.ok(accountColumns.includes('pending_delete_at'));
   assert.equal(refreshTableCount, 1);
+  assert.equal(emailChallengeTableCount, 1);
 
   cleanupDatabaseModule(db, tempDir);
 });

@@ -9,7 +9,7 @@ const {
 } = require('./helpers/integration-auth');
 
 test('pending token enrollment rejects bad code and finalizes with a good code', async (t) => {
-  const harness = createIsolatedServer('sesapp-totp-enroll-');
+  const harness = createIsolatedServer('sesapp-totp-enroll-', { mfaMethod: 'totp' });
   t.after(async () => {
     await harness.stopServer().catch(() => {});
     harness.cleanup();
