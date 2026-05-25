@@ -21,6 +21,7 @@ let currentAdminTab = 'users';
 let adminUsersSearchTimer = null;
 let currentPendingAuthChallenge = null;
 let isLoginBusy = false;
+let authRefreshTimer = null;
 const typingUsers    = new Set();
 const dmNotifCounts  = {};        // username → unread count
 const AUTH_TOKEN_KEY = 'sesappAuthToken';
@@ -623,6 +624,7 @@ function applySessionTokens({ accessToken = null, refreshToken, clearLegacyAcces
     else localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
   if (clearLegacyAccess) localStorage.removeItem(AUTH_TOKEN_KEY);
+  scheduleAccessTokenRefresh();
 }
 
 const FATAL_AUTH_ERROR_CODES = new Set([
@@ -1094,10 +1096,56 @@ function handleAuthFailure(message) {
   currentUserProfile = null;
   currentAuthToken = null;
   currentRefreshToken = null;
+  clearScheduledTokenRefresh();
   clearPendingAuthChallenge();
   clearStoredAuth();
   sessionStorage.setItem('sesappLoginError', message || 'Oturumun geçersiz. Tekrar giriş yap.');
   window.location.reload();
+}
+
+function clearScheduledTokenRefresh() {
+  if (!authRefreshTimer) return;
+  clearTimeout(authRefreshTimer);
+  authRefreshTimer = null;
+}
+
+function parseAuthTokenExpiry(token) {
+  if (typeof token !== 'string') return null;
+  const [encodedPayload] = token.split('.', 1);
+  if (!encodedPayload) return null;
+  try {
+    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded));
+    return Number.isFinite(payload?.exp) ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function scheduleAccessTokenRefresh() {
+  clearScheduledTokenRefresh();
+  const refreshToken = currentRefreshToken || getStoredRefreshToken();
+  if (!currentAuthToken || !refreshToken) return;
+
+  const expiresAt = parseAuthTokenExpiry(currentAuthToken);
+  if (!Number.isFinite(expiresAt)) return;
+
+  const delayMs = Math.max(5_000, expiresAt - Date.now() - 60_000);
+  authRefreshTimer = setTimeout(async () => {
+    const refreshed = await refreshAccessToken();
+    if (!refreshed.ok && currentUser && appEl.classList.contains('_shown')) {
+      showConnectionBanner('Oturum yenilenemedi, yeniden bağlanılıyor...');
+    }
+  }, delayMs);
+}
+
+async function tryRecoverSocketSession() {
+  if (!(currentRefreshToken || getStoredRefreshToken())) return false;
+  const refreshed = await refreshAccessToken();
+  if (!refreshed.ok) return false;
+  if (!socket || socket.disconnected) createSocketConnection();
+  return true;
 }
 
 async function refreshAccessToken() {
@@ -1119,6 +1167,7 @@ async function refreshAccessToken() {
     if (!response.ok) {
       currentAuthToken = null;
       currentRefreshToken = null;
+      clearScheduledTokenRefresh();
       clearStoredAuth();
       return { ok: false, message: payload?.error || 'Oturum yenilenemedi.' };
     }
@@ -1127,6 +1176,7 @@ async function refreshAccessToken() {
     if (!nextTokens.accessToken || !nextTokens.refreshToken) {
       currentAuthToken = null;
       currentRefreshToken = null;
+      clearScheduledTokenRefresh();
       clearStoredAuth();
       return { ok: false, message: 'Sunucu eksik oturum verisi döndürdü.' };
     }
@@ -1290,6 +1340,8 @@ function createSocketConnection() {
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
     timeout: 20000,
+    transports: ['websocket', 'polling'],
+    rememberUpgrade: true,
     auth: { token: currentAuthToken },
   });
   setupSocket();
@@ -1351,6 +1403,7 @@ async function logoutAndReset({ revoke = true } = {}) {
   currentAuthToken = null;
   currentRefreshToken = null;
   currentUserProfile = null;
+  clearScheduledTokenRefresh();
   clearPendingAuthChallenge();
   clearStoredAuth();
 
@@ -1364,6 +1417,7 @@ async function logoutAndReset({ revoke = true } = {}) {
   currentAuthToken = null;
   currentRefreshToken = null;
   currentUserProfile = null;
+  clearScheduledTokenRefresh();
   clearPendingAuthChallenge();
   socket?.disconnect();
   window.location.reload();
@@ -3038,7 +3092,14 @@ function updateVoiceRoomsUI(state) {
 
 // ═══════════════ SOCKET OLAYLARI ═══════════════
 function setupSocket() {
-  socket.on('auth_error', ({ code, message }) => {
+  socket.on('auth_error', async ({ code, message }) => {
+    if (code === 'invalid_session') {
+      const recovered = await tryRecoverSocketSession();
+      if (recovered) {
+        hideConnectionBanner();
+        return;
+      }
+    }
     if (isFatalAuthErrorCode(code)) {
       handleAuthFailure(message);
       return;
