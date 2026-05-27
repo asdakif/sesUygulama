@@ -399,13 +399,34 @@ function pokerDeal() {
 // ─── Socket.io ───────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   const ip = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+  const connectedAt = Date.now();
   if (isRateLimited(ip)) {
     socketLog.warn('connection_rate_limited', { socketId: socket.id, ip });
     socket.emit('auth_error', { message: 'Çok fazla bağlantı denemesi. Lütfen bekleyin.' });
     socket.disconnect(true);
     return;
   }
-  socketLog.info('connected', { socketId: socket.id, ip });
+  socketLog.info('connected', {
+    socketId: socket.id,
+    ip,
+    transport: socket.conn?.transport?.name || null,
+  });
+  socket.conn?.on('upgrade', () => {
+    socketLog.info('transport_upgraded', {
+      socketId: socket.id,
+      username: socket.data?.auth?.username || null,
+      transport: socket.conn?.transport?.name || null,
+    });
+  });
+  socket.conn?.on('close', (reason) => {
+    socketLog.warn('transport_closed', {
+      socketId: socket.id,
+      username: socket.data?.auth?.username || null,
+      reason: reason || null,
+      transport: socket.conn?.transport?.name || null,
+      connectedForMs: Date.now() - connectedAt,
+    });
+  });
   const authRecheckTimer = setInterval(() => {
     const token = socket.data?.auth?.token;
     if (!token) return;
@@ -467,6 +488,30 @@ io.on('connection', (socket) => {
       socketId: socket.id,
       username: resolved.session.username,
     });
+  });
+
+  socket.on('client_debug_events', ({ events }) => {
+    if (!Array.isArray(events) || !events.length) return;
+    for (const event of events.slice(0, 20)) {
+      if (!event || typeof event !== 'object') continue;
+      socketLog.warn('client_realtime_event', {
+        socketId: socket.id,
+        username: socket.data?.auth?.username || null,
+        ip,
+        event: event.event || 'unknown',
+        clientTime: event.time || null,
+        reason: event.reason || null,
+        code: event.code || null,
+        message: event.message || null,
+        description: event.description || null,
+        clientTransport: event.transport || null,
+        clientConnected: typeof event.connected === 'boolean' ? event.connected : null,
+        channelId: event.channelId || null,
+        voiceRoom: event.voiceRoom || null,
+        attempt: Number.isFinite(event.attempt) ? event.attempt : null,
+        status: Number.isFinite(event.status) ? event.status : null,
+      });
+    }
   });
 
   // ── Giriş ──────────────────────────────────────────────────────────────────
@@ -919,12 +964,19 @@ io.on('connection', (socket) => {
   });
 
   // ── Bağlantı kesildi ───────────────────────────────────────────────────────
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
     clearInterval(authRecheckTimer);
     const user = connectedUsers.get(socket.id);
     if (user) {
       const { username, channelId } = user;
-      socketLog.info('disconnected', { socketId: socket.id, username, channelId });
+      socketLog.info('disconnected', {
+        socketId: socket.id,
+        username,
+        channelId,
+        reason: reason || null,
+        transport: socket.conn?.transport?.name || null,
+        connectedForMs: Date.now() - connectedAt,
+      });
       endScreenShare(socket.id, channelId);
       connectedUsers.delete(socket.id);
       leaveAllVoiceRooms(socket);
@@ -956,7 +1008,12 @@ io.on('connection', (socket) => {
         }
       }
     } else {
-      socketLog.info('disconnected_unauthed', { socketId: socket.id });
+      socketLog.info('disconnected_unauthed', {
+        socketId: socket.id,
+        reason: reason || null,
+        transport: socket.conn?.transport?.name || null,
+        connectedForMs: Date.now() - connectedAt,
+      });
     }
   });
 });

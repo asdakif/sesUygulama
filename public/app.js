@@ -22,12 +22,136 @@ let adminUsersSearchTimer = null;
 let currentPendingAuthChallenge = null;
 let isLoginBusy = false;
 let authRefreshTimer = null;
+const REALTIME_DEBUG_STORAGE_KEY = 'sesappRealtimeDebugHistory';
+const REALTIME_DEBUG_HISTORY_LIMIT = 120;
+const REALTIME_DEBUG_BATCH_LIMIT = 20;
+let realtimeDebugHistory = loadRealtimeDebugHistory();
+let pendingRealtimeDebugEvents = [];
 const typingUsers    = new Set();
 const dmNotifCounts  = {};        // username → unread count
 const AUTH_TOKEN_KEY = 'sesappAuthToken';
 const REFRESH_TOKEN_KEY = 'sesappRefreshToken';
 const LAST_CHANNEL_ID_KEY = 'sesappLastChannelId';
 let refreshSessionPromise = null;
+
+function loadRealtimeDebugHistory() {
+  try {
+    const raw = localStorage.getItem(REALTIME_DEBUG_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(-REALTIME_DEBUG_HISTORY_LIMIT) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistRealtimeDebugHistory() {
+  try {
+    localStorage.setItem(
+      REALTIME_DEBUG_STORAGE_KEY,
+      JSON.stringify(realtimeDebugHistory.slice(-REALTIME_DEBUG_HISTORY_LIMIT)),
+    );
+  } catch {}
+}
+
+function getSocketTransportName(activeSocket = socket) {
+  return activeSocket?.io?.engine?.transport?.name || null;
+}
+
+function recordRealtimeDebug(event, meta = {}) {
+  const entry = {
+    time: new Date().toISOString(),
+    event,
+    socketId: socket?.id || null,
+    connected: Boolean(socket?.connected),
+    transport: getSocketTransportName(),
+    username: currentUser || null,
+    channelId: currentChannelId || null,
+    voiceRoom: currentVoiceRoom || null,
+    ...meta,
+  };
+  realtimeDebugHistory.push(entry);
+  if (realtimeDebugHistory.length > REALTIME_DEBUG_HISTORY_LIMIT) {
+    realtimeDebugHistory = realtimeDebugHistory.slice(-REALTIME_DEBUG_HISTORY_LIMIT);
+  }
+  persistRealtimeDebugHistory();
+  pendingRealtimeDebugEvents.push(entry);
+  if (pendingRealtimeDebugEvents.length > REALTIME_DEBUG_HISTORY_LIMIT) {
+    pendingRealtimeDebugEvents = pendingRealtimeDebugEvents.slice(-REALTIME_DEBUG_HISTORY_LIMIT);
+  }
+}
+
+function flushRealtimeDebugEvents() {
+  if (!socket?.connected || !pendingRealtimeDebugEvents.length) return;
+  const batch = pendingRealtimeDebugEvents.slice(0, REALTIME_DEBUG_BATCH_LIMIT);
+  pendingRealtimeDebugEvents = pendingRealtimeDebugEvents.slice(batch.length);
+  try {
+    socket.emit('client_debug_events', { events: batch });
+  } catch {}
+}
+
+function attachSocketDiagnostics(activeSocket) {
+  if (!activeSocket || activeSocket.__sesappDiagnosticsAttached) return;
+  activeSocket.__sesappDiagnosticsAttached = true;
+
+  const guard = (callback) => (...args) => {
+    if (activeSocket !== socket) return;
+    callback(...args);
+  };
+
+  activeSocket.io.on('reconnect_attempt', guard((attempt) => {
+    recordRealtimeDebug('socket_reconnect_attempt', { attempt });
+  }));
+  activeSocket.io.on('reconnect', guard((attempt) => {
+    recordRealtimeDebug('socket_reconnect_success', { attempt });
+    flushRealtimeDebugEvents();
+  }));
+  activeSocket.io.on('reconnect_error', guard((err) => {
+    recordRealtimeDebug('socket_reconnect_error', {
+      message: err?.message || null,
+      description: err?.description || null,
+    });
+  }));
+  activeSocket.io.on('reconnect_failed', guard(() => {
+    recordRealtimeDebug('socket_reconnect_failed');
+  }));
+
+  const attachEngineListeners = guard(() => {
+    const engine = activeSocket.io?.engine;
+    if (!engine || engine.__sesappDiagnosticsAttached) return;
+    engine.__sesappDiagnosticsAttached = true;
+    engine.on('upgrade', (transport) => {
+      if (activeSocket !== socket) return;
+      recordRealtimeDebug('socket_transport_upgrade', {
+        transport: transport?.name || engine.transport?.name || null,
+      });
+      flushRealtimeDebugEvents();
+    });
+    engine.on('close', (reason) => {
+      if (activeSocket !== socket) return;
+      recordRealtimeDebug('socket_engine_close', {
+        reason: reason || null,
+        transport: engine.transport?.name || null,
+      });
+    });
+  });
+
+  activeSocket.on('connect', attachEngineListeners);
+}
+
+window.__sesappRealtimeDebug = function __sesappRealtimeDebug() {
+  return {
+    history: [...realtimeDebugHistory],
+    pending: [...pendingRealtimeDebugEvents],
+    socket: {
+      id: socket?.id || null,
+      connected: Boolean(socket?.connected),
+      transport: getSocketTransportName(),
+      channelId: currentChannelId || null,
+      voiceRoom: currentVoiceRoom || null,
+    },
+  };
+};
 
 // Müzik
 let audioUnlocked   = false;
@@ -1152,7 +1276,10 @@ async function refreshAccessToken() {
   if (refreshSessionPromise) return refreshSessionPromise;
 
   const refreshToken = currentRefreshToken || getStoredRefreshToken();
-  if (!refreshToken) return { ok: false, message: 'Oturum yenilenemedi.' };
+  if (!refreshToken) {
+    recordRealtimeDebug('auth_refresh_missing_token');
+    return { ok: false, message: 'Oturum yenilenemedi.' };
+  }
 
   refreshSessionPromise = fetch('/api/auth/refresh', {
     method: 'POST',
@@ -1165,6 +1292,11 @@ async function refreshAccessToken() {
     } catch {}
 
     if (!response.ok) {
+      recordRealtimeDebug('auth_refresh_failed', {
+        message: payload?.error || 'Oturum yenilenemedi.',
+        status: response.status,
+        code: payload?.code || null,
+      });
       currentAuthToken = null;
       currentRefreshToken = null;
       clearScheduledTokenRefresh();
@@ -1174,6 +1306,10 @@ async function refreshAccessToken() {
 
     const nextTokens = extractSessionTokens(payload);
     if (!nextTokens.accessToken || !nextTokens.refreshToken) {
+      recordRealtimeDebug('auth_refresh_failed', {
+        message: 'Sunucu eksik oturum verisi döndürdü.',
+        status: response.status,
+      });
       currentAuthToken = null;
       currentRefreshToken = null;
       clearScheduledTokenRefresh();
@@ -1186,6 +1322,7 @@ async function refreshAccessToken() {
       refreshToken: nextTokens.refreshToken,
       clearLegacyAccess: true,
     });
+    recordRealtimeDebug('auth_refresh_success');
 
     if (socket) {
       try {
@@ -1344,21 +1481,27 @@ function createSocketConnection() {
     rememberUpgrade: true,
     auth: { token: currentAuthToken },
   });
+  attachSocketDiagnostics(socket);
   setupSocket();
 
   socket.on('connect', () => {
+    recordRealtimeDebug('socket_connect', { socketId: socket?.id || null });
+    flushRealtimeDebugEvents();
     hideConnectionBanner();
     if (!currentUser || !currentAuthToken || !currentChannelId) return;
     clearTimeout(reconnectVoiceJoinTimer);
     clearTimeout(reconnectScreenTimer);
+    recordRealtimeDebug('socket_join_emit', { channelId: currentChannelId, voiceRoom: currentVoiceRoom || null });
     socket.emit('join', { channelId: currentChannelId, sessionId: clientSessionId });
     if (currentVoiceRoom) {
       reconnectVoiceJoinTimer = setTimeout(() => {
+        recordRealtimeDebug('socket_voice_join_emit', { room: currentVoiceRoom });
         socket?.emit('voice_join', { room: currentVoiceRoom });
       }, 500);
     }
     if (isSharing && screenStream) {
       reconnectScreenTimer = setTimeout(() => {
+        recordRealtimeDebug('socket_screen_share_resume_emit');
         socket?.emit('screen_share_start');
       }, 700);
     }
@@ -3093,9 +3236,11 @@ function updateVoiceRoomsUI(state) {
 // ═══════════════ SOCKET OLAYLARI ═══════════════
 function setupSocket() {
   socket.on('auth_error', async ({ code, message }) => {
+    recordRealtimeDebug('socket_auth_error', { code: code || null, message: message || null });
     if (code === 'invalid_session') {
       const recovered = await tryRecoverSocketSession();
       if (recovered) {
+        recordRealtimeDebug('socket_auth_error_recovered', { code });
         hideConnectionBanner();
         return;
       }
@@ -3319,12 +3464,22 @@ function setupSocket() {
     closeScreenView();
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason, details) => {
+    recordRealtimeDebug('socket_disconnect', {
+      reason: reason || null,
+      description: details?.description || details?.message || null,
+      code: details?.context?.code || null,
+    });
     showConnectionBanner();
     resetRealtimeStateForReconnect();
   });
 
   socket.on('connect_error', (err) => {
+    recordRealtimeDebug('socket_connect_error', {
+      message: err?.message || null,
+      code: err?.data?.code || null,
+      description: err?.description || null,
+    });
     if (isFatalAuthErrorCode(err?.data?.code)) {
       handleAuthFailure(err.message || 'Oturumun geçersiz. Tekrar giriş yap.');
       return;
