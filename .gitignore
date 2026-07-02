@@ -1,5 +1,9 @@
 node_modules/
 chat-data.json
 chat-data.sqlite
+chat-data.sqlite-shm
+chat-data.sqlite-wal
 .env
 dist/
+.DS_Store
+AGENTS.md

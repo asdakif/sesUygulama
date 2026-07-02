@@ -33,6 +33,29 @@ const AUTH_TOKEN_KEY = 'sesappAuthToken';
 const REFRESH_TOKEN_KEY = 'sesappRefreshToken';
 const LAST_CHANNEL_ID_KEY = 'sesappLastChannelId';
 let refreshSessionPromise = null;
+const {
+  syncSocketAuthToken = function syncSocketAuthTokenFallback(activeSocket, token) {
+    if (!activeSocket) return;
+    activeSocket.auth = {
+      ...(activeSocket.auth || {}),
+      token: token || null,
+    };
+  },
+  recoverInvalidSessionConnectError = async function recoverInvalidSessionConnectErrorFallback({
+    err,
+    tryRecoverSocketSession,
+    recordRealtimeDebug = () => {},
+    hideConnectionBanner = () => {},
+  } = {}) {
+    const code = err?.data?.code || null;
+    if (code !== 'invalid_session' || typeof tryRecoverSocketSession !== 'function') return false;
+    const recovered = await tryRecoverSocketSession();
+    if (!recovered) return false;
+    recordRealtimeDebug('socket_connect_error_recovered', { code });
+    hideConnectionBanner();
+    return true;
+  },
+} = globalThis.SesAppSocketAuth || {};
 
 function loadRealtimeDebugHistory() {
   try {
@@ -748,6 +771,7 @@ function applySessionTokens({ accessToken = null, refreshToken, clearLegacyAcces
     else localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
   if (clearLegacyAccess) localStorage.removeItem(AUTH_TOKEN_KEY);
+  syncSocketAuthToken(socket, currentAuthToken);
   scheduleAccessTokenRefresh();
 }
 
@@ -3474,12 +3498,19 @@ function setupSocket() {
     resetRealtimeStateForReconnect();
   });
 
-  socket.on('connect_error', (err) => {
+  socket.on('connect_error', async (err) => {
     recordRealtimeDebug('socket_connect_error', {
       message: err?.message || null,
       code: err?.data?.code || null,
       description: err?.description || null,
     });
+    const recovered = await recoverInvalidSessionConnectError({
+      err,
+      tryRecoverSocketSession,
+      recordRealtimeDebug,
+      hideConnectionBanner,
+    });
+    if (recovered) return;
     if (isFatalAuthErrorCode(err?.data?.code)) {
       handleAuthFailure(err.message || 'Oturumun geçersiz. Tekrar giriş yap.');
       return;
