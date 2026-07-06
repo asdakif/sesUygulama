@@ -31,7 +31,9 @@ test('auth token verifies and rejects tampering', () => {
   assert.ok(verifyAuthToken(token, 'test-secret-key-that-is-at-least-32-bytes-long')?.tokenId);
 
   const [payload, signature] = token.split('.');
-  const tampered = `${payload}.${signature.slice(0, -1)}a`;
+  // Son base64url karakterinin 4 biti anlamsız olduğundan onu değiştirmek
+  // baytları değiştirmeyebilir; ilk karakterin tüm bitleri anlamlıdır.
+  const tampered = `${payload}.${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
   assert.equal(verifyAuthToken(tampered, 'test-secret-key-that-is-at-least-32-bytes-long'), null);
 });
 
