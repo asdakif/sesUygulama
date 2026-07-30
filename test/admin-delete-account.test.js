@@ -56,5 +56,5 @@ test('admin delete removes the account immediately and frees a reserved pending 
     inviteCode: process.env.REGISTRATION_INVITE,
   });
   assert.equal(register.response.status, 201);
-  assert.deepEqual(register.payload.requires, ['email_code']);
+  assert.ok(register.payload.access_token);
 });

@@ -408,14 +408,6 @@ function createAuthRouter({
     if (!canUseLegacyInvite && !inviteCode) {
       return sendApiError(res, 503, 'Yeni hesap kaydı şu anda kapalı.');
     }
-    if (!isEmailFlowEnabled()) {
-      return sendApiError(
-        res,
-        503,
-        'Yeni hesap kaydi icin e-posta servisi hazir degil.',
-        'email_unavailable',
-      );
-    }
 
     const usernameCheck = validateUsername(req.body?.username);
     if (!usernameCheck.ok) return sendApiError(res, 400, usernameCheck.message, 'invalid_username');
@@ -447,34 +439,7 @@ function createAuthRouter({
       return sendApiError(res, 409, 'Bu kullanıcı adı kullanılamıyor.', 'username_unavailable');
     }
 
-    const emailToken = buildOpaqueToken(result.account.username);
-    const emailExpiresAt = Date.now() + config.emailVerificationTokenTtlMs;
-    db.setAccountPendingEmail(result.account.username, emailCheck.email, emailToken.tokenHash, emailExpiresAt);
-
-    let registrationWarning = null;
-    const useEmailCodeMfa = config.mfaRequired;
-    if (!useEmailCodeMfa) {
-      try {
-        await dispatchVerificationEmail({
-          account: result.account,
-          email: emailCheck.email,
-          token: emailToken.token,
-          req,
-        });
-      } catch (error) {
-        registrationWarning = 'Dogrulama e-postasi su an gonderilemedi. Ayarlardan tekrar deneyebilirsin.';
-        audit.record('email_verification_send_failed', {
-          actorUsername: result.account.username,
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          metadata: { reason: error?.message || 'unknown' },
-        });
-        logger.warn('email_verification_send_failed', {
-          username: result.account.username,
-          error: error?.message || String(error),
-        });
-      }
-    }
+    db.setAccountEmail(result.account.username, emailCheck.email);
 
     ensureAdminBootstrap();
     const bootstrappedAccount = db.getAccount(result.account.username) || result.account;
@@ -491,49 +456,7 @@ function createAuthRouter({
       userAgent: req.get('user-agent'),
       metadata: { mode: useLegacyInvite ? 'legacy' : 'invite' },
     });
-    if (!useEmailCodeMfa) {
-      audit.record('email_verification_requested', {
-        actorUsername: bootstrappedAccount.username,
-        targetUsername: bootstrappedAccount.username,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        metadata: { email: emailCheck.email },
-      });
-    }
     logger.info('account_registered', { username: bootstrappedAccount.username });
-
-    if (config.mfaRequired) {
-      const challenge = issuePendingChallenge(bootstrappedAccount, 'email', {
-        delivery: 'email',
-        emailHint: maskEmailAddress(emailCheck.email),
-      });
-      try {
-        await dispatchEmailAuthCode({
-          account: bootstrappedAccount,
-          email: emailCheck.email,
-          challengeId: challenge.pending_token_id,
-          req,
-          reason: 'register',
-        });
-      } catch (error) {
-        registrationWarning = 'Giris kodu e-postana gonderilemedi. Tekrar kod isteyebilirsin.';
-        audit.record('email_auth_code_send_failed', {
-          actorUsername: bootstrappedAccount.username,
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          metadata: { reason: error?.message || 'unknown', flow: 'register' },
-        });
-        logger.warn('email_auth_code_send_failed', {
-          username: bootstrappedAccount.username,
-          error: error?.message || String(error),
-          flow: 'register',
-        });
-      }
-      return res.status(201).json({
-        ...challenge,
-        warning: registrationWarning,
-      });
-    }
 
     const session = sessions.issueSession({
       account: bootstrappedAccount,
@@ -546,7 +469,6 @@ function createAuthRouter({
       access_token: session.accessToken,
       refresh_token: session.refreshToken,
       user: session.user,
-      warning: registrationWarning,
     });
   });
 

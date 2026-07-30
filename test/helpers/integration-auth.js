@@ -86,7 +86,6 @@ async function registerAndCompleteMfa({
   email,
   password,
   inviteCode,
-  getNoopOutbox = null,
 }) {
   const register = await postJson(baseUrl, '/api/auth/register', {
     username,
@@ -96,23 +95,10 @@ async function registerAndCompleteMfa({
   });
   if (!register.response.ok) throw new Error(`register failed: ${register.response.status}`);
 
-  const finalized = await completePendingAuth({
-    baseUrl,
-    pendingToken: register.payload.pending_token,
-    pendingPayload: register.payload,
-    getNoopOutbox,
-    email,
-  });
-  const authResponse = finalized.verify?.response;
-  if (!authResponse?.ok) {
-    throw new Error(`email verification failed: ${authResponse?.status}`);
-  }
-  const authPayload = finalized.verify?.payload;
-
   return {
     register,
-    accessToken: authPayload.access_token,
-    refreshToken: authPayload.refresh_token,
+    accessToken: register.payload.access_token,
+    refreshToken: register.payload.refresh_token,
   };
 }
 

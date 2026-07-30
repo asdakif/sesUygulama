@@ -8,7 +8,7 @@ const {
   postJson,
 } = require('./helpers/integration-auth');
 
-test('email code is required on register but plain login succeeds afterwards', async (t) => {
+test('register issues tokens immediately and login works without email code', async (t) => {
   const harness = createIsolatedServer('sesapp-email-mfa-');
   t.after(async () => {
     await harness.stopServer().catch(() => {});
@@ -31,29 +31,20 @@ test('email code is required on register but plain login succeeds afterwards', a
     inviteCode: process.env.REGISTRATION_INVITE,
   });
   assert.equal(register.response.status, 201);
-  assert.deepEqual(register.payload.requires, ['email_code']);
-  assert.ok(register.payload.pending_token);
+  assert.ok(register.payload.access_token);
+  assert.ok(register.payload.refresh_token);
+  assert.equal(register.payload.pending_token || null, null);
 
-  const firstCodeMail = harness.getNoopOutbox().find((item) => item.kind === 'login_code' && item.to === email);
-  assert.ok(firstCodeMail?.code);
-
-  const verify = await postJson(baseUrl, '/api/auth/2fa/verify', {
-    code: firstCodeMail.code,
-  }, {
-    Authorization: `Bearer ${register.payload.pending_token}`,
-  });
-  assert.equal(verify.response.status, 200);
-  assert.ok(verify.payload.access_token);
-  assert.ok(verify.payload.refresh_token);
+  const codeMail = harness.getNoopOutbox().find((item) => item.kind === 'login_code' && item.to === email);
+  assert.equal(codeMail || null, null);
 
   const meRes = await fetch(`${baseUrl}/api/auth/me`, {
-    headers: { Authorization: `Bearer ${verify.payload.access_token}` },
+    headers: { Authorization: `Bearer ${register.payload.access_token}` },
   });
   assert.equal(meRes.status, 200);
   const mePayload = await meRes.json();
   assert.equal(mePayload.user?.email, email);
   assert.ok(mePayload.user?.emailVerifiedAt);
-  assert.ok(mePayload.user?.mfaEnabledAt);
 
   harness.resetNoopOutbox();
   const login = await postJson(baseUrl, '/api/auth/login', {
