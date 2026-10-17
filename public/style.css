@@ -2081,3 +2081,52 @@ li.active .ch-hash { color: var(--text-2); }
 .poker-hand-list li strong { color: var(--text-1); min-width: 130px; display: inline-block; }
 .poker-hand-list li:first-child strong { color: #f0c040; }
 .poker-hand-list li:nth-child(2) strong { color: #c8a0f0; }
+
+/* Replik paneli */
+#soundboard-panel {
+  position: fixed; z-index: 110; top: 62px; right: 20px;
+  width: min(390px, calc(100vw - 24px)); max-height: calc(100dvh - 80px);
+  overflow-y: auto; padding: 20px; border: 1px solid var(--border);
+  border-radius: 16px; background: var(--bg-secondary); color: var(--text-1);
+  box-shadow: 0 18px 64px rgba(0,0,0,.45);
+}
+.soundboard-heading { display: flex; align-items: center; gap: 12px; }
+.soundboard-brand {
+  display: grid; place-items: center; width: 44px; height: 44px;
+  border-radius: 12px; background: rgba(88,101,242,.18); color: #b9bfff;
+  font-size: 1.25rem; font-weight: 800;
+}
+.soundboard-heading h2 { font-size: 1.1rem; }
+.soundboard-heading p { color: var(--text-2); font-size: .8rem; margin-top: 3px; }
+#soundboard-close { margin-left: auto; color: var(--text-2); padding: 10px; border-radius: 8px; }
+#soundboard-close:hover { background: var(--bg-hover); color: var(--text-1); }
+#soundboard-room { color: var(--text-2); font-size: .78rem; margin: 16px 0 12px; overflow-wrap: anywhere; }
+#soundboard-clips { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.soundboard-card {
+  display: flex; flex-direction: column; gap: 7px; min-width: 0;
+  padding: 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-tertiary);
+}
+.soundboard-card.is-playing { border-color: var(--accent); background: #292d46; }
+.soundboard-card h3 { font-size: .84rem; font-weight: 600; line-height: 1.4; }
+.soundboard-card p { font-size: .72rem; color: var(--text-2); margin-top: auto; }
+.soundboard-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.soundboard-card-actions { display: flex; gap: 5px; }
+.soundboard-card-actions button { flex: 1; font: inherit; font-size: .7rem; min-height: 32px; border-radius: 6px; }
+.soundboard-preview { color: var(--text-2); background: var(--bg-hover); }
+.soundboard-preview:hover { background: var(--bg-active); color: var(--text-1); }
+.soundboard-send { color: white; background: var(--accent); }
+.soundboard-send:not(:disabled):hover { background: var(--accent-h); }
+.soundboard-send:disabled { opacity: .42; cursor: not-allowed; }
+.soundboard-controls { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 16px; }
+.soundboard-controls > label { display: flex; justify-content: space-between; font-size: .8rem; color: var(--text-2); }
+#soundboard-volume { width: 100%; margin: 10px 0; accent-color: var(--accent); }
+.soundboard-options { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.soundboard-options label { display: flex; gap: 6px; align-items: center; font-size: .75rem; color: var(--text-2); }
+#soundboard-enabled { accent-color: var(--accent); }
+#soundboard-stop, #soundboard-retry { color: var(--text-1); padding: 8px; border-radius: 6px; background: var(--bg-hover); font-size: .72rem; }
+#soundboard-stop:disabled { color: var(--text-m); cursor: default; }
+#soundboard-status { font-size: .75rem; line-height: 1.5; color: var(--text-2); margin-top: 12px; min-height: 2.8em; }
+#soundboard-open[aria-expanded="true"], #soundboard-open.soundboard-playing { background: rgba(88,101,242,.2); color: #c9ceff; }
+#soundboard-panel button:focus-visible, #soundboard-open:focus-visible,
+#soundboard-panel input:focus-visible { outline: 2px solid #b9bfff; outline-offset: 3px; }

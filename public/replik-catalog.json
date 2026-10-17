@@ -1,0 +1,16 @@
+[
+  {
+    "id": "selamun-aleykum",
+    "title": "Selamün aleyküm",
+    "src": "/audio/replikler/selamun-aleykum.mp3",
+    "duration": 1.228,
+    "explicit": false
+  },
+  {
+    "id": "aleykum-selam",
+    "title": "Aleyküm selam babba",
+    "src": "/audio/replikler/aleykum-selam.mp3",
+    "duration": 1.228,
+    "explicit": false
+  }
+]

@@ -1509,6 +1509,7 @@ function createSocketConnection() {
   setupSocket();
 
   socket.on('connect', () => {
+    soundboardController.sync();
     recordRealtimeDebug('socket_connect', { socketId: socket?.id || null });
     flushRealtimeDebugEvents();
     hideConnectionBanner();
@@ -2172,7 +2173,7 @@ const audioDeviceController = voiceSettings?.createAudioDeviceController({
   outputSelect: outputDeviceSelect,
   noteEl: audioDeviceNote,
   screenVideo,
-  getPeerAudioElements: () => [...document.querySelectorAll('audio[id^="audio-"]')],
+  getPeerAudioElements: () => [...document.querySelectorAll('audio[id^="audio-"], #soundboard-audio')],
   getBaseVoiceConstraints: getBaseVoiceAudioConstraints,
   getCurrentVoiceRoom: () => currentVoiceRoom,
   getPeerConnections: () => peerConnections,
@@ -2182,6 +2183,13 @@ const audioDeviceController = voiceSettings?.createAudioDeviceController({
   applyMicState: () => applyMicState(),
   updateMuteBtn: () => updateMuteBtn(),
   onMicrophoneError: (error) => alert(`Seçilen mikrofon açılamadı: ${error.message}`),
+});
+
+const soundboardController = window.SesAppSoundboard.create({
+  getSocket: () => socket,
+  getRoom: () => currentVoiceRoom,
+  isUserMuted: (username) => locallyMuted.has(username),
+  applyOutputDevice: () => audioDeviceController?.applyPreferredOutputDevice?.(),
 });
 
 // ═══════════════ EKRAN PAYLAŞIMI ═══════════════
@@ -2632,6 +2640,7 @@ function startSpeakingDetection() {
 }
 
 function updateVoiceUI() {
+  soundboardController.sync();
   if (currentVoiceRoom) {
     voiceControls.classList.remove('hidden');
     micBtn.style.display = 'flex';
@@ -3259,6 +3268,7 @@ function updateVoiceRoomsUI(state) {
 
 // ═══════════════ SOCKET OLAYLARI ═══════════════
 function setupSocket() {
+  socket.on('soundboard_play', (payload) => soundboardController.receive(payload));
   socket.on('auth_error', async ({ code, message }) => {
     recordRealtimeDebug('socket_auth_error', { code: code || null, message: message || null });
     if (code === 'invalid_session') {
@@ -3489,6 +3499,7 @@ function setupSocket() {
   });
 
   socket.on('disconnect', (reason, details) => {
+    soundboardController.sync();
     recordRealtimeDebug('socket_disconnect', {
       reason: reason || null,
       description: details?.description || details?.message || null,

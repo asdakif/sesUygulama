@@ -352,6 +352,7 @@
       <span id="channel-name-display">kanal</span>
       <span id="channel-desc-display" class="channel-desc"></span>
       <div id="header-actions">
+        <button class="hdr-btn" id="soundboard-open" type="button" aria-expanded="false" aria-controls="soundboard-panel">♫ Replikler</button>
         <!-- Poker -->
         <button class="hdr-btn" id="poker-open-btn" title="Poker Oyna">🃏 Poker</button>
         <!-- Ekran paylaşımı -->
@@ -371,6 +372,27 @@
         </div>
       </div>
     </div>
+
+    <section id="soundboard-panel" class="hidden" aria-labelledby="soundboard-title">
+      <div class="soundboard-heading">
+        <div class="soundboard-brand" aria-hidden="true">01</div>
+        <div><h2 id="soundboard-title">Sıfır Bir</h2><p>Replik paneli</p></div>
+        <button id="soundboard-close" type="button" aria-label="Replik panelini kapat">✕</button>
+      </div>
+      <p id="soundboard-room">Odaya çalmak için sesli kanala katıl.</p>
+      <div id="soundboard-clips"><p>Replikler yükleniyor…</p></div>
+      <button id="soundboard-retry" class="hidden" type="button">Tekrar yükle</button>
+      <div class="soundboard-controls">
+        <label for="soundboard-volume">Replik sesi <output id="soundboard-volume-value">60%</output></label>
+        <input id="soundboard-volume" type="range" min="0" max="100" value="60" />
+        <div class="soundboard-options">
+          <label><input id="soundboard-enabled" type="checkbox" checked /> Odadaki replikleri duy</label>
+          <button id="soundboard-stop" type="button" disabled>Bende durdur</button>
+        </div>
+      </div>
+      <p id="soundboard-status" role="status" aria-live="polite">Önce kendin dinle, sonra odaya çal.</p>
+      <audio id="soundboard-audio" preload="none"></audio>
+    </section>
 
     <!-- Ekran paylaşımı görüntüleme paneli -->
     <div id="screen-panel" class="hidden">
@@ -713,6 +735,7 @@
 <script src="/sounds.js"></script>
 <script src="/voice-settings.js"></script>
 <script src="/socket-auth-recovery.js"></script>
+<script src="/soundboard.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -21,6 +21,7 @@ const { createLogger } = require('./server/logger');
 const { createRealtimeState } = require('./server/realtime-state');
 const { createSoundCloudService } = require('./server/soundcloud');
 const { bootstrapAdminRole } = require('./server/admin-bootstrap');
+const { createSoundboard } = require('./server/soundboard');
 
 const log = createLogger('server');
 const socketLog = log.child('socket');
@@ -175,6 +176,8 @@ const {
   getMusicPayload,
   advanceMusicQueue,
 } = realtime;
+
+const soundboard = createSoundboard({ io, connectedUsers, voiceRooms });
 
 function disconnectSocketsMatching(predicate, reason = 'auth_revoked', message = 'Oturumun sonlandırıldı. Tekrar giriş yap.') {
   let disconnected = 0;
@@ -723,6 +726,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('voice_leave', () => leaveAllVoiceRooms(socket));
+
+  socket.on('soundboard_play', (payload, acknowledge) => {
+    const result = soundboard.play(socket, payload);
+    if (typeof acknowledge === 'function') acknowledge(result);
+  });
 
   socket.on('create_voice_channel', ({ name }) => {
     if (!connectedUsers.get(socket.id)) return;
